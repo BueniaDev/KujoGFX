@@ -75,13 +75,11 @@ target_link_libraries(kujogfx INTERFACE ${GLEW_LIBRARIES})
 find_package(Vulkan REQUIRED)
 target_link_libraries(kujogfx INTERFACE Vulkan::Vulkan VulkanLayerSettings VulkanSafeStruct)
 
-add_subdirectory(external/glslang)
+find_package(glslang REQUIRED)
 target_link_libraries(kujogfx INTERFACE glslang)
 
-add_subdirectory(external/SPIRV-Headers)
-add_subdirectory(external/SPIRV-Tools)
-add_subdirectory(external/SPIRV-Cross)
-target_link_libraries(kujogfx INTERFACE spirv-cross-c-shared)
+find_package(SPIRV-Tools REQUIRED)
+target_link_libraries(kujogfx INTERFACE SPIRV-Tools spirv-cross-c-shared)
 
 add_subdirectory(examples/01-clear)
 add_subdirectory(examples/02-triangle)
