@@ -35,6 +35,17 @@
 #include <vulkan/vulkan_win32.h>
 #define GLAD_WGL_IMPLEMENTATION
 #include <external/glad/wgl.h>
+#elif defined(KUJOGFX_PLATFORM_LINUX)
+#if defined(KUJOGFX_IS_WAYLAND)
+#include <vulkan/vulkan_wayland.h>
+#elif defined(KUJOGFX_IS_X11)
+#include <X11/Xutil.h>
+#include <vulkan/vulkan_xlib.h>
+#else
+#error "KujoGFX could not determine the windowing platform of your system."
+#endif
+#define GLAD_EGL_IMPLEMENTATION
+#include <external/glad/egl.h>
 #endif
 #define GLAD_GL_IMPLEMENTATION
 #include <external/glad/gl.h>
@@ -62,6 +73,7 @@ namespace kujogfx
     struct KujoGFXPlatformData
     {
 	void *window_handle = NULL;
+	void *display_handle = NULL;
 	void *context_handle = NULL;
     };
 
@@ -674,7 +686,7 @@ namespace kujogfx
 
 	    }
 
-	    virtual bool initBackend(void*)
+	    virtual bool initBackend(void*, void*)
 	    {
 		return true;
 	    }
@@ -737,21 +749,6 @@ namespace kujogfx
 	    {
 
 	    }
-
-	    bool initBackend(void*)
-	    {
-		return true;
-	    }
-
-	    void shutdownBackend()
-	    {
-		return;
-	    }
-
-	    void *getContextHandle()
-	    {
-		return NULL;
-	    }
     };
 
     #if defined(KUJOGFX_PLATFORM_WINDOWS)
@@ -774,7 +771,7 @@ namespace kujogfx
 
 	    }
 
-	    bool initBackend(void *window_handle)
+	    bool initBackend(void *window_handle, void*)
 	    {
 		if (!initD3D11(window_handle))
 		{
@@ -1088,9 +1085,9 @@ namespace kujogfx
 
 	    }
 
-	    bool initBackend(void* window_handle)
+	    bool initBackend(void *window_handle, void *display_handle)
 	    {
-		if (!initOpenGL(window_handle))
+		if (!initOpenGL(window_handle, display_handle))
 		{
 		    return false;
 		}
@@ -1119,86 +1116,14 @@ namespace kujogfx
 	    int window_width = 0;
 	    int window_height = 0;
 	    void *win_handle = NULL;
+	    void *disp_handle = NULL;
+
+	    GLuint gl_vao;
 
 	    KujoGFXPass current_pass;
 
 	    unordered_map<uint32_t, GLPipeline> pipelines;
 	    GLPipeline current_pipeline;
-
-	    #if defined(KUJOGFX_PLATFORM_LINUX)
-	    enum DisplayType : int
-	    {
-		None = 0,
-		X11,
-		Wayland
-	    };
-
-	    DisplayType display_type = None;
-
-	    string getEnvVar(string var_name)
-	    {
-		auto var_val = getenv(var_name.c_str());
-
-		if (var_val != NULL)
-		{
-		    return var_val;
-		}
-
-		return "";
-	    }
-
-	    bool isWayland()
-	    {
-		return (display_type == Wayland);
-	    }
-
-	    bool isX11()
-	    {
-		return (display_type == X11);
-	    }
-
-	    bool detectX11OrWayland()
-	    {
-		if (display_type != None)
-		{
-		    return true;
-		}
-
-		string session_type = getEnvVar("XDG_SESSION_TYPE");
-		string display = getEnvVar("DISPLAY");
-		string wayland_display = getEnvVar("WAYLAND_DISPLAY");
-
-		if (session_type == "wayland")
-		{
-		    display_type = Wayland;
-		}
-		else if (session_type == "x11")
-		{
-		    display_type = X11;
-		}
-		else if (!wayland_display.empty())
-		{
-		    display_type = Wayland;
-		}
-		else if (!display.empty())
-		{
-		    display_type = X11;
-		}
-		else
-		{
-		    display_type = None;
-		}
-
-		if (display_type == None)
-		{
-		    cout << "Could not determine session type!" << endl;
-		    return false;
-		}
-
-		return true;
-	    }
-
-	    #endif
 
 	    #if defined(KUJOGFX_PLATFORM_WINDOWS)
 	    HGLRC m_hrc;
@@ -1235,6 +1160,14 @@ namespace kujogfx
 
 		int version = gladLoaderLoadWGL(pDC);
 
+		if (version == 0)
+		{
+		    wglMakeCurrent(NULL, NULL);
+		    wglDeleteContext(tempContext);
+		    cout << "Could not load WGL functions!" << endl;
+		    return false;
+		}
+
 		int attribs[] = 
 		{
 		    WGL_CONTEXT_MAJOR_VERSION_ARB, gl_major_version,
@@ -1243,23 +1176,15 @@ namespace kujogfx
 		    0
 		};
 
-		if (version == 0)
-		{
-		    cout << "Could not load WGL functions, falling back..." << endl;
-		    m_hrc = tempContext;
-		}
-		else
-		{
-		    m_hrc = wglCreateContextAttribsARB(pDC, 0, attribs);
-		    wglMakeCurrent(NULL, NULL);
-		    wglDeleteContext(tempContext);
-		    wglMakeCurrent(pDC, m_hrc);
-		}
+		m_hrc = wglCreateContextAttribsARB(pDC, 0, attribs);
+		wglMakeCurrent(NULL, NULL);
+		wglDeleteContext(tempContext);
+		wglMakeCurrent(pDC, m_hrc);
 
 		if (gladLoaderLoadGL() == 0)
 		{
 		    wglMakeCurrent(NULL, NULL);
-		    wglDeleteContext(tempContext);
+		    wglDeleteContext(m_hrc);
 		    cout << "Could not load OpenGL functions!" << endl;
 		    return false;
 		}
@@ -1275,6 +1200,7 @@ namespace kujogfx
 
 	    void deleteWGLContext()
 	    {
+		gladLoaderUnloadGL();
 		wglMakeCurrent(NULL, NULL);
 
 		if (m_hrc)
@@ -1282,8 +1208,157 @@ namespace kujogfx
 		    wglDeleteContext(m_hrc);
 		    m_hrc = NULL;
 		}
+	    }
 
+	    #elif defined(KUJOGFX_PLATFORM_LINUX)
+	    EGLDisplay m_display;
+	    EGLSurface m_surface;
+	    EGLContext m_context;
+
+	    bool createEGLContext()
+	    {
+		int egl_version = gladLoaderLoadEGL(NULL);
+
+		if (egl_version == 0)
+		{
+		    cout << "Could not load EGL!" << endl;
+		    return false;
+		}
+
+		auto display_type = reinterpret_cast<EGLNativeDisplayType>(disp_handle);
+		auto window_type = reinterpret_cast<EGLNativeWindowType>(win_handle);
+
+		m_display = eglGetDisplay(display_type);
+
+		if (m_display == EGL_NO_DISPLAY)
+		{
+		    cout << "Could not fetch EGL display!" << endl;
+		    return false;
+		}
+
+		if (!eglInitialize(m_display, NULL, NULL))
+		{
+		    cout << "Could not initialize EGL!" << endl;
+		    return false;
+		}
+
+		egl_version = gladLoaderLoadEGL(m_display);
+
+		if (egl_version == 0)
+		{
+		    cout << "Could not reload EGL!" << endl;
+		    return false;
+		}
+
+
+		if (!eglBindAPI(EGL_OPENGL_API))
+		{
+		    cout << "Could not bind OpenGL API!" << endl;
+		    return false;
+		}
+
+		EGLint config_attrib[] = 
+		{
+		    EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+		    EGL_CONFORMANT, EGL_OPENGL_BIT,
+		    EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+		    EGL_COLOR_BUFFER_TYPE, EGL_RGB_BUFFER,
+		    EGL_RED_SIZE, 8,
+		    EGL_GREEN_SIZE, 8,
+		    EGL_BLUE_SIZE, 8,
+		    EGL_ALPHA_SIZE, 8,
+		    EGL_NONE
+		};
+
+		EGLint config_count;
+
+		EGLConfig config;
+
+		if (!eglChooseConfig(m_display, config_attrib, &config, 1, &config_count))
+		{
+		    cout << "Could not select configuration!" << endl;
+		    return false;
+		}
+
+		if (config_count != 1)
+		{
+		    cout << "Could not find appropriate configuration!" << endl;
+		    return false;
+		}
+
+		EGLint surface_attribs[] =
+		{
+		    EGL_GL_COLORSPACE, EGL_GL_COLORSPACE_LINEAR,
+		    EGL_RENDER_BUFFER, EGL_BACK_BUFFER,
+		    EGL_NONE
+		};
+
+		m_surface = eglCreateWindowSurface(m_display, config, window_type, surface_attribs);
+
+		if (m_surface == EGL_NO_SURFACE)
+		{
+		    cout << "Could not create EGL surface!" << endl;
+		    return false;
+		}
+
+		EGLint context_attribs[] =
+		{
+		    EGL_CONTEXT_MAJOR_VERSION_KHR, gl_major_version,
+		    EGL_CONTEXT_MINOR_VERSION_KHR, gl_minor_version,
+		    EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+		    #ifndef NDEBUG
+		    EGL_CONTEXT_OPENGL_DEBUG, EGL_TRUE,
+		    #endif
+		    EGL_NONE
+		};
+
+		m_context = eglCreateContext(m_display, config, EGL_NO_CONTEXT, context_attribs);
+
+		if (m_context == EGL_NO_CONTEXT)
+		{
+		    cout << "Could not create EGL context!" << endl;
+		    return false;
+		}
+
+		if (!eglMakeCurrent(m_display, m_surface, m_surface, m_context))
+		{
+		    cout << "Could not make EGL context current!" << endl;
+		    return false;
+		}
+
+		if (gladLoaderLoadGL() == 0)
+		{
+		    cout << "Could not load OpenGL functions!" << endl;
+		    return false;
+		}
+
+		#ifndef NDEBUG
+		auto debug_cb = [](GLenum source, GLenum type, GLuint, GLenum severity, GLsizei, const GLchar *msg, const void*) -> void
+		{
+		    cout << "Source: " << hex << int(source) << endl;
+		    cout << "Type: " << hex << int(type) << endl;
+		    cout << "Severity: " << hex << int(severity) << endl;
+		    cout << "Message: " << string(msg) << endl;
+		    cout << endl;
+		};
+
+		glDebugMessageCallbackARB(debug_cb, NULL);
+		glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS_ARB);
+		#endif
+
+		cout << "OpenGL version found: " << glGetString(GL_VERSION) << endl;
+		return true;
+	    }
+
+	    void deleteEGLContext()
+	    {
 		gladLoaderUnloadGL();
+		eglMakeCurrent(m_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+		eglDestroyContext(m_display, m_context);
+		eglDestroySurface(m_display, m_surface);
+		eglTerminate(m_display);
+
+		gladLoaderUnloadEGL();
 	    }
 
 	    #endif
@@ -1302,6 +1377,20 @@ namespace kujogfx
 
 		window_width = (win_rect.right - win_rect.left);
 		window_height = (win_rect.bottom - win_rect.top);
+		#elif defined(KUJOGFX_PLATFORM_LINUX)
+		#if defined(KUJOGFX_IS_X11)
+		Display *dpy = reinterpret_cast<Display*>(disp_handle);
+		Window win = reinterpret_cast<Window>(win_handle);
+
+		XWindowAttributes attrib;
+		XGetWindowAttributes(dpy, win, &attrib);
+
+		window_width = attrib.width;
+		window_height = attrib.height;
+		#else
+		#error "OpenGL window resolution fetch is unimplemented on Wayland"
+		#endif
+
 		#else
 		#error "OpenGL window resolution fetch is unimplemented for this platform"
 		#endif
@@ -1309,9 +1398,10 @@ namespace kujogfx
 		return true;
 	    }
 
-	    bool initOpenGL(void *window_handle)
+	    bool initOpenGL(void *window_handle, void *display_handle)
 	    {
 		win_handle = window_handle;
+		disp_handle = display_handle;
 
 		if (!fetchWindowRes())
 		{
@@ -1326,9 +1416,19 @@ namespace kujogfx
 		{
 		    return false;
 		}
+		#elif defined(KUJOGFX_PLATFORM_LINUX)
+
+		if (!createEGLContext())
+		{
+		    return false;
+		}
+
 		#else
 		#error "OpenGL context creation is unimplemented for this platform"
 		#endif
+
+		glGenVertexArrays(1, &gl_vao);
+		glBindVertexArray(gl_vao);
 
 		return true;
 	    }
@@ -1344,8 +1444,17 @@ namespace kujogfx
 		    }
 		}
 
+		glBindVertexArray(0);
+
+		if (gl_vao)
+		{
+		    glDeleteVertexArrays(1, &gl_vao);
+		}
+
 		#if defined(KUJOGFX_PLATFORM_WINDOWS)
 		deleteWGLContext();
+		#elif defined(KUJOGFX_PLATFORM_LINUX)
+		deleteEGLContext();
 		#else
 		#error "OpenGL context deletion is unimplemented for this platform"
 		#endif
@@ -1514,6 +1623,30 @@ namespace kujogfx
 
 	    void draw(KujoGFXDraw draw_cmd)
 	    {
+		auto program = current_pipeline.program;
+		glValidateProgram(program);
+
+		int success = 0;
+
+		glGetProgramiv(program, GL_VALIDATE_STATUS, &success);
+
+		if (!success)
+		{
+		    GLint log_length;
+		    glGetProgramiv(program, GL_INFO_LOG_LENGTH, &log_length);
+
+		    vector<char> str_data(log_length, 0);
+		    glGetProgramInfoLog(program, log_length, NULL, str_data.data());
+
+		    string log_str(log_length, 0);
+		    copy(str_data.begin(), str_data.end(), log_str.begin());
+
+		    cout << "Program validation failed!" << endl;
+		    cout << "Error log: " << endl;
+		    cout << log_str << endl;
+		    throw runtime_error("KujoGFX_OpenGL error");
+		}
+
 		int base_elements = draw_cmd.base_element;
 		int num_elements = draw_cmd.num_elements;
 		int num_instances = draw_cmd.num_instances;
@@ -1532,9 +1665,28 @@ namespace kujogfx
 	    {
 		#if defined(KUJOGFX_PLATFORM_WINDOWS)
 		SwapBuffers(m_hdc);
+		#elif defined(KUJOGFX_PLATFORM_LINUX)
+		eglSwapBuffers(m_display, m_surface);
 		#else
 		#error "OpenGL buffer swap is unimplemented for this platform"
 		#endif
+	    }
+
+	    void printErrors()
+	    {
+		GLenum err;
+
+		while (true)
+		{
+		    err = glGetError();
+
+		    if (err == GL_NO_ERROR)
+		    {
+			break;
+		    }
+
+		    cout << "OpenGL error code of " << hex << int(err) << " detected" << endl;
+		}
 	    }
     };
 
@@ -1558,9 +1710,9 @@ namespace kujogfx
 
 	    }
 
-	    bool initBackend(void* window_handle)
+	    bool initBackend(void *window_handle, void *display_handle)
 	    {
-		if (!initVulkan(window_handle))
+		if (!initVulkan(window_handle, display_handle))
 		{
 		    return false;
 		}
@@ -1620,86 +1772,13 @@ namespace kujogfx
 	    uint32_t window_height = 0;
 
 	    void *win_handle = NULL;
+	    void *disp_handle = NULL;
 	    KujoGFXPass current_pass;
 
-	    #if defined(KUJOGFX_PLATFORM_LINUX)
-	    enum DisplayType : int
-	    {
-		None = 0,
-		X11,
-		Wayland
-	    };
-
-	    DisplayType display_type = None;
-
-	    string getEnvVar(string var_name)
-	    {
-		auto var_val = getenv(var_name.c_str());
-
-		if (var_val != NULL)
-		{
-		    return var_val;
-		}
-
-		return "";
-	    }
-
-	    bool isWayland()
-	    {
-		return (display_type == Wayland);
-	    }
-
-	    bool isX11()
-	    {
-		return (display_type == X11);
-	    }
-
-	    bool detectX11OrWayland()
-	    {
-		if (display_type != None)
-		{
-		    return true;
-		}
-
-		string session_type = getEnvVar("XDG_SESSION_TYPE");
-		string display = getEnvVar("DISPLAY");
-		string wayland_display = getEnvVar("WAYLAND_DISPLAY");
-
-		if (session_type == "wayland")
-		{
-		    display_type = Wayland;
-		}
-		else if (session_type == "x11")
-		{
-		    display_type = X11;
-		}
-		else if (!wayland_display.empty())
-		{
-		    display_type = Wayland;
-		}
-		else if (!display.empty())
-		{
-		    display_type = X11;
-		}
-		else
-		{
-		    display_type = None;
-		}
-
-		if (display_type == None)
-		{
-		    cout << "Could not determine session type!" << endl;
-		    return false;
-		}
-
-		return true;
-	    }
-
-	    #endif
-
-	    bool initVulkan(void *window_handle)
+	    bool initVulkan(void *window_handle, void *display_handle)
 	    {
 		win_handle = window_handle;
+		disp_handle = display_handle;
 
 		if (!createInstance())
 		{
@@ -2284,9 +2363,11 @@ namespace kujogfx
 		    #if defined(KUJOGFX_PLATFORM_WINDOWS)
 		    VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
 		    #elif defined(KUJOGFX_PLATFORM_LINUX) || defined(KUJOGFX_PLATFORM_BSD)
+		    #if defined(KUJOGFX_IS_WAYLAND)
 		    VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME,
+		    #elif defined(KUJOGFX_IS_X11)
 		    VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
-		    VK_KHR_XCB_SURFACE_EXTENSION_NAME,
+		    #endif
 		    #elif defined(KUJOGFX_PLATFORM_MACOS)
 		    VK_MVK_MACOS_SURFACE_EXTENSION_NAME,
 		    #else
@@ -2399,6 +2480,19 @@ namespace kujogfx
 
 		window_width = (win_rect.right - win_rect.left);
 		window_height = (win_rect.bottom - win_rect.top);
+		#elif defined(KUJOGFX_PLATFORM_LINUX)
+		#if defined(KUJOGFX_IS_X11)
+		Display *dpy = reinterpret_cast<Display*>(disp_handle);
+		Window win = reinterpret_cast<Window>(win_handle);
+
+		XWindowAttributes attrib;
+		XGetWindowAttributes(dpy, win, &attrib);
+
+		window_width = attrib.width;
+		window_height = attrib.height;
+		#else
+		#error "Vulkan window resolution fetch is unimplemented on Wayland"
+		#endif
 		#else
 		#error "Vulkan window resolution fetch is unimplemented for this platform"
 		#endif
@@ -2413,6 +2507,8 @@ namespace kujogfx
 		    return false;
 		}
 
+		VkResult err = VK_SUCCESS;
+
 		#if defined(KUJOGFX_PLATFORM_WINDOWS)
 		HWND handle = reinterpret_cast<HWND>(win_handle);
 
@@ -2425,17 +2521,34 @@ namespace kujogfx
 		win32_create_info.hinstance = hInstance;
 		win32_create_info.hwnd = handle;
 
-		VkResult err = vkCreateWin32SurfaceKHR(instance, &win32_create_info, NULL, &surface);
+		err = vkCreateWin32SurfaceKHR(instance, &win32_create_info, NULL, &surface);
+
+		#elif defined(KUJOGFX_PLATFORM_LINUX)
+		#if defined(KUJOGFX_IS_X11)
+		Display *dpy = reinterpret_cast<Display*>(disp_handle);
+		Window win = reinterpret_cast<Window>(win_handle);
+
+		VkXlibSurfaceCreateInfoKHR xlib_create_info;
+		xlib_create_info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+		xlib_create_info.pNext = NULL;
+		xlib_create_info.flags = 0;
+		xlib_create_info.dpy = dpy;
+		xlib_create_info.window = win;
+
+		err = vkCreateXlibSurfaceKHR(instance, &xlib_create_info, NULL, &surface);
+
+		#else
+		#error "Vulkan surface creation is unimplemented on Wayland"
+		#endif
+		#else
+		#error "Vulkan surface creation is unimplemented for this platform"
+		#endif
 
 		if (err != VK_SUCCESS)
 		{
 		    cout << "Could not create surface!" << endl;
 		    return false;
 		}
-
-		#else
-		#error "Vulkan surface creation is unimplemented for this platform"
-		#endif
 
 		return true;
 	    }
@@ -2841,7 +2954,7 @@ namespace kujogfx
 		    return false;
 		}
 
-		present_command_buffers.resize(max_frames_in_flight);
+		present_command_buffers.resize(swapchain_images.size());
 
 		VkCommandBufferAllocateInfo alloc_info = {};
 		alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -2916,12 +3029,12 @@ namespace kujogfx
 	    {
 		if ((available_formats.size() == 1) && (available_formats[0].format == VK_FORMAT_UNDEFINED))
 		{
-		    return {VK_FORMAT_R8G8B8A8_UNORM, VK_COLORSPACE_SRGB_NONLINEAR_KHR};
+		    return {VK_FORMAT_B8G8R8A8_UNORM, VK_COLORSPACE_SRGB_NONLINEAR_KHR};
 		}
 
 		for (const auto &format : available_formats)
 		{
-		    if (format.format == VK_FORMAT_R8G8B8A8_UNORM)
+		    if (format.format == VK_FORMAT_B8G8R8A8_UNORM)
 		    {
 			return format;
 		    }
@@ -3137,7 +3250,7 @@ namespace kujogfx
 
 		    if (backend_ptr != NULL)
 		    {
-			if (backend_ptr->initBackend(platform_data.window_handle))
+			if (backend_ptr->initBackend(platform_data.window_handle, platform_data.display_handle))
 			{
 			    platform_data.context_handle = backend_ptr->getContextHandle();
 			    backend = unique_ptr<KujoGFXBackend>(backend_ptr);

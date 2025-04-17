@@ -80,18 +80,30 @@ void* getWindowHandle(SDL_Window *win)
     #elif defined(KUJOGFX_PLATFORM_MACOS)
     return (void*)SDL_GetPointerProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
     #elif defined(KUJOGFX_PLATFORM_LINUX) || defined(KUJOGFX_PLATFORM_BSD)
-    if (SDL_strcmp(SDL_GetCurrentVideoDriver(), "wayland") == 0)
-    {
-	return (void*)SDL_GetPointerProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
-    }
-    else
-    {
-	return (void*)&SDL_GetNumberPropery(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
-    }
+    #if defined(KUJOGFX_IS_WAYLAND)
+    return (void*)SDL_GetPointerProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
+    #elif defined(KUJOGFX_IS_X11)
+    return (void*)SDL_GetNumberProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+    #endif
     #elif defined(KUJOGFX_PLATFORM_ANDROID)
     return (void*)SDL_GetPointerProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
     #elif defined(KUJOGFX_PLATFORM_EMSCRIPTEN)
     return (void*)SDL_GetStringProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_EMSCRIPTEN_CANVAS_ID_STRING, NULL);
+    #else
+    return NULL;
+    #endif
+}
+
+void* getDisplayHandle(SDL_Window *win)
+{
+    #if defined(KUJOGFX_PLATFORM_LINUX) || defined(KUJOGFX_PLATFORM_BSD)
+    #if defined(KUJOGFX_IS_WAYLAND)
+    return (void*)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, NULL);
+    #elif defined(KUJOGFX_IS_X11)
+    return (void*)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
+    #else
+    return NULL;
+    #endif
     #else
     return NULL;
     #endif
@@ -106,6 +118,7 @@ int main(int argc, char *argv[])
 
     KujoGFXPlatformData pform_data;
     pform_data.window_handle = getWindowHandle(window);
+    pform_data.display_handle = getDisplayHandle(window);
 
     KujoGFX gfx;
     // gfx.setBackend(BackendOpenGL);
