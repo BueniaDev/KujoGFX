@@ -61,16 +61,16 @@ set(KUJOGFX_HEADERS
 add_library(kujogfx INTERFACE kujogfx.h)
 target_include_directories(kujogfx INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_subdirectory(external)
+
+target_link_libraries(kujogfx INTERFACE glad)
+
 if (WIN32)
-    target_link_libraries(kujogfx INTERFACE ntdll.lib d3d11.lib d3dcompiler.lib opengl32.lib)
+    target_link_libraries(kujogfx INTERFACE ntdll.lib d3d11.lib d3dcompiler.lib)
 endif()
 
 find_package(OpenGL REQUIRED)
 target_link_libraries(kujogfx INTERFACE OpenGL::GL)
-
-find_package(GLEW REQUIRED)
-target_include_directories(kujogfx INTERFACE ${GLEW_INCLUDE_DIRS})
-target_link_libraries(kujogfx INTERFACE ${GLEW_LIBRARIES})
 
 find_package(Vulkan REQUIRED)
 target_link_libraries(kujogfx INTERFACE Vulkan::Vulkan VulkanLayerSettings VulkanSafeStruct)
@@ -79,7 +79,16 @@ find_package(glslang REQUIRED)
 target_link_libraries(kujogfx INTERFACE glslang)
 
 find_package(SPIRV-Tools REQUIRED)
-target_link_libraries(kujogfx INTERFACE SPIRV-Tools spirv-cross-c-shared)
+
+set(SPIRV_LIBRARIES
+	SPIRV-Tools
+	spirv-cross-core
+	spirv-cross-cpp
+	spirv-cross-glsl
+	spirv-cross-hlsl
+)
+
+target_link_libraries(kujogfx INTERFACE ${SPIRV_LIBRARIES})
 
 add_subdirectory(examples/01-clear)
 add_subdirectory(examples/02-triangle)

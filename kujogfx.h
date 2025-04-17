@@ -27,17 +27,19 @@
 #include <algorithm>
 #include <map>
 #include <unordered_map>
-#include <GL/glew.h>
 #include <vulkan/vulkan.h>
 #if defined(KUJOGFX_PLATFORM_WINDOWS)
 #include <windows.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
-#include <GL/wglew.h>
 #include <vulkan/vulkan_win32.h>
+#define GLAD_WGL_IMPLEMENTATION
+#include <external/glad/wgl.h>
 #endif
+#define GLAD_GL_IMPLEMENTATION
+#include <external/glad/gl.h>
 #include "glslang/Public/ShaderLang.h"
-#include "glslang/SPIRV/GlslangtoSpv.h"
+#include "glslang/SPIRV/GlslangToSpv.h"
 #include "spirv_cross/spirv_glsl.hpp"
 #include "spirv_cross/spirv_hlsl.hpp"
 using namespace spirv_cross;
@@ -1231,13 +1233,7 @@ namespace kujogfx
 		HGLRC tempContext = wglCreateContext(pDC);
 		wglMakeCurrent(pDC, tempContext);
 
-		GLenum err = glewInit();
-
-		if (err != GLEW_OK)
-		{
-		    cout << "GLEW could not be initialized! GLEW_error: " << glewGetErrorString(err) << endl;
-		    return false;
-		}
+		int version = gladLoaderLoadWGL(pDC);
 
 		int attribs[] = 
 		{
@@ -1247,16 +1243,25 @@ namespace kujogfx
 		    0
 		};
 
-		if (wglewIsSupported("WGL_ARB_create_context") == 1)
+		if (version == 0)
+		{
+		    cout << "Could not load WGL functions, falling back..." << endl;
+		    m_hrc = tempContext;
+		}
+		else
 		{
 		    m_hrc = wglCreateContextAttribsARB(pDC, 0, attribs);
 		    wglMakeCurrent(NULL, NULL);
 		    wglDeleteContext(tempContext);
 		    wglMakeCurrent(pDC, m_hrc);
 		}
-		else
+
+		if (gladLoaderLoadGL() == 0)
 		{
-		    m_hrc = tempContext;
+		    wglMakeCurrent(NULL, NULL);
+		    wglDeleteContext(tempContext);
+		    cout << "Could not load OpenGL functions!" << endl;
+		    return false;
 		}
 
 		if (!m_hrc)
@@ -1277,6 +1282,8 @@ namespace kujogfx
 		    wglDeleteContext(m_hrc);
 		    m_hrc = NULL;
 		}
+
+		gladLoaderUnloadGL();
 	    }
 
 	    #endif
