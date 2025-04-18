@@ -1104,6 +1104,8 @@ namespace kujogfx
 	    {
 		#if defined(KUJOGFX_PLATFORM_WINDOWS)
 		return reinterpret_cast<void*>(m_hrc);
+		#elif defined(KUJOGFX_PLATFORM_LINUX)
+		return (void*)&m_context;
 		#else
 		return NULL;
 		#endif

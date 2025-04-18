@@ -87,8 +87,8 @@ int main(int argc, char *argv[])
     pform_data.display_handle = getDisplayHandle(window);
 
     KujoGFX gfx;
-    gfx.setBackend(BackendOpenGL);
-    // gfx.setBackend(BackendVulkan);
+    // gfx.setBackend(BackendOpenGL);
+    gfx.setBackend(BackendVulkan);
 
     if (!gfx.init(pform_data))
     {
