@@ -1,94 +1,45 @@
 #include <iostream>
 #include <cstdint>
-#include <SDL3/SDL.h>
-#include "kujogfx.h"
-using namespace kujogfx;
+#include "kujogfx_helper.h"
 using namespace std;
 
-SDL_Window *window = NULL;
 KujoGFX gfx;
+KujoGFXHelper helper;
 
-bool sdlError(string msg)
+bool init()
 {
-    cout << msg << " SDL_Error: " << SDL_GetError() << endl;
-    return false;
+    return helper.init("KujoGFX-clear", 800, 600);
 }
 
-bool initSDL()
+void shutdown()
 {
-    if (!SDL_Init(SDL_INIT_VIDEO))
-    {
-	return sdlError("SDL could not be initialized!");
-    }
-
-    auto flags = SDL_WINDOW_RESIZABLE;
-
-    window = SDL_CreateWindow("KujoGFX-clear", 800, 600, flags);
-
-    if (window == NULL)
-    {
-	return sdlError("Window could not be created!");
-    }
-
-    return true;
+    helper.shutdown();
 }
 
-void shutdownSDL()
+void* getWindowHandle()
 {
-    SDL_DestroyWindow(window);
-    SDL_Quit();
+    return helper.getWindowHandle();
 }
 
-void* getWindowHandle(SDL_Window *win)
+void* getDisplayHandle()
 {
-    #if defined(KUJOGFX_PLATFORM_WINDOWS)
-    return (void*)SDL_GetPointerProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
-    #elif defined(KUJOGFX_PLATFORM_MACOS)
-    return (void*)SDL_GetPointerProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
-    #elif defined(KUJOGFX_PLATFORM_LINUX) || defined(KUJOGFX_PLATFORM_BSD)
-    #if defined(KUJOGFX_IS_WAYLAND)
-    return (void*)SDL_GetPointerProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
-    #elif defined(KUJOGFX_IS_X11)
-    return (void*)SDL_GetNumberProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
-    #endif
-    #elif defined(KUJOGFX_PLATFORM_ANDROID)
-    return (void*)SDL_GetPointerProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
-    #elif defined(KUJOGFX_PLATFORM_EMSCRIPTEN)
-    return (void*)SDL_GetStringProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_EMSCRIPTEN_CANVAS_ID_STRING, NULL);
-    #else
-    return NULL;
-    #endif
-}
-
-void* getDisplayHandle(SDL_Window *win)
-{
-    #if defined(KUJOGFX_PLATFORM_LINUX) || defined(KUJOGFX_PLATFORM_BSD)
-    #if defined(KUJOGFX_IS_WAYLAND)
-    return (void*)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, NULL);
-    #elif defined(KUJOGFX_IS_X11)
-    return (void*)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
-    #else
-    return NULL;
-    #endif
-    #else
-    return NULL;
-    #endif
+    return helper.getDisplayHandle();
 }
 
 int main(int argc, char *argv[])
 {
-    if (!initSDL())
+    if (!init())
     {
 	return 1;
     }
 
     KujoGFXPlatformData pform_data;
-    pform_data.window_handle = getWindowHandle(window);
-    pform_data.display_handle = getDisplayHandle(window);
+    pform_data.window_handle = getWindowHandle();
+    pform_data.display_handle = getDisplayHandle();
 
     KujoGFX gfx;
-    // gfx.setBackend(BackendOpenGL);
-    gfx.setBackend(BackendVulkan);
+    gfx.setBackend(BackendOpenGL);
+    // gfx.setBackend(BackendVulkan);
 
     if (!gfx.init(pform_data))
     {
@@ -98,26 +49,14 @@ int main(int argc, char *argv[])
 
     KujoGFXPassAction pass_action(KujoGFXColor(0.0, 0.0, 1.0, 1.0));
 
-    bool quit = false;
-    SDL_Event event;
-
-    while (!quit)
-    {
-	while (SDL_PollEvent(&event))
-	{
-	    switch (event.type)
-	    {
-		case SDL_EVENT_QUIT: quit = true; break;
-	    }
-	}
-
+    helper.run([&]() -> void {
 	gfx.beginPass(pass_action);
 	gfx.endPass();
 	gfx.commit();
 	gfx.frame();
-    }
+    });
 
     gfx.shutdown();
-    shutdownSDL();
+    shutdown();
     return 0;
 }

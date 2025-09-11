@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
 project(KujoGFX)
 
+include(FetchContent)
+
 # Require C++17 (and position independent code)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,6 +16,7 @@ endif()
 if (WIN32)
     message(STATUS "Operating system is Windows.")
     set(KUJOGFX_PLATFORM "Win32")
+    set(KUJOGFX_VULKAN 1)
     if (CMAKE_CXX_COMPILER_ID STREQUAL GNU)
 	message(STATUS "Compiler is MinGW.")
 	set(COMPILE_OPTIONS "-Wall")
@@ -29,9 +32,23 @@ if (WIN32)
 	message(SEND_ERROR "Compiler not supported.")
 	return()
     endif()
+elseif(EMSCRIPTEN)
+    message(WARNING "Emscripten support is HIGHLY experimental, and may not even compile correctly, so be EXTREMELY careful here!")
+    message(STATUS "Operating system is Emscripten.")
+    set(KUJOGFX_PLATFORM "Emscripten")
+    set(KUJOGFX_VULKAN 0)
+
+    if (CMAKE_CXX_COMPILER_ID STREQUAL Clang)
+	message(STATUS "Compiler is Clang.")
+	set(COMPILE_OPTIONS "-Wall")
+    else()
+	message(SEND_ERROR "Compiler not supported.")
+	return()
+    endif()
 elseif(UNIX AND NOT APPLE)
     message(WARNING "Linux support is HIGHLY experimental, and may not even compile correctly, so be EXTREMELY careful here!")
     message(STATUS "Operating system is Linux.")
+    set(KUJOGFX_VULKAN 1)
 
     set(display_server_info $ENV{XDG_SESSION_TYPE})
 
@@ -60,6 +77,7 @@ elseif(APPLE)
     message(WARNING "MacOS support is HIGHLY experimental, and may not even compile correctly, so be EXTREMELY careful here!")
     message(STATUS "Operating system is MacOS.")
     set(KUJOGFX_PLATFORM "MacOS")
+    set(KUJOGFX_VULKAN 1)
     if (CMAKE_CXX_COMPILER_ID STREQUAL AppleClang)
 	message(STATUS "Compiler is AppleClang.")
 	set(COMPILE_OPTIONS "-Wall")
@@ -74,11 +92,15 @@ endif()
 
 set(KUJOGFX_HEADERS kujogfx.h)
 
+message(LOG "${CMAKE_CURRENT_SOURCE_DIR}")
 add_library(kujogfx INTERFACE ${KUJOGFX_HEADERS})
 target_include_directories(kujogfx INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_subdirectory(external)
 target_link_libraries(kujogfx INTERFACE glad)
+
+find_package(OpenGL REQUIRED)
+target_link_libraries(kujogfx INTERFACE OpenGL::GL)
 
 if (${KUJOGFX_PLATFORM} STREQUAL "Win32")
     target_link_libraries(kujogfx INTERFACE ntdll.lib d3d11.lib d3dcompiler.lib)
@@ -89,24 +111,57 @@ elseif (${KUJOGFX_PLATFORM} STREQUAL "Wayland")
     target_compile_definitions(kujogfx INTERFACE KUJOGFX_IS_WAYLAND)
 elseif (${KUJOGFX_PLATFORM} STREQUAL "X11")
     find_package(X11 REQUIRED)
-
-    target_link_libraries(kujogfx INTERFACE OpenGL::EGL OpenGL::OpenGL)
-
     target_include_directories(kujogfx INTERFACE ${X11_INCLUDE_DIR})
     target_link_libraries(kujogfx INTERFACE ${X11_LIBRARIES})
     target_compile_definitions(kujogfx INTERFACE KUJOGFX_IS_X11)
 endif()
 
-find_package(OpenGL REQUIRED)
-target_link_libraries(kujogfx INTERFACE OpenGL::GL)
-
+if (KUJOGFX_VULKAN)
 find_package(Vulkan REQUIRED)
 target_link_libraries(kujogfx INTERFACE Vulkan::Vulkan)
+endif()
 
-find_package(glslang REQUIRED)
+# Fetch dependencies
+
+FetchContent_Declare(
+    SPIRV_Headers
+    GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Headers.git
+    GIT_TAG vulkan-sdk-1.4.321.0
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(SPIRV_Headers)
+
+FetchContent_Declare(
+    spirv_cross
+    GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Cross.git
+    GIT_TAG vulkan-sdk-1.4.321.0
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(spirv_cross)
+
+FetchContent_Declare(
+    spirv-tools
+    GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Tools.git
+    GIT_TAG vulkan-sdk-1.4.321.0
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(spirv-tools)
+
+FetchContent_Declare(
+    glslang
+    GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
+    GIT_TAG vulkan-sdk-1.4.321.0
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(glslang)
+
+target_include_directories(kujogfx INTERFACE "${SPIRV_Headers_SOURCE_DIR}/include")
+
 target_link_libraries(kujogfx INTERFACE glslang)
-
-find_package(SPIRV-Tools REQUIRED)
 
 set(SPIRV_LIBRARIES
 	SPIRV-Tools
@@ -121,4 +176,6 @@ target_link_libraries(kujogfx INTERFACE ${SPIRV_LIBRARIES})
 
 add_subdirectory(examples/01-clear)
 add_subdirectory(examples/02-triangle)
+add_subdirectory(examples/03-triangle-vertex)
 add_subdirectory(spirv_test)
+add_subdirectory(spirv_reflection)

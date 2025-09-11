@@ -18,6 +18,7 @@
 #endif
 
 #include <iostream>
+#include <sstream>
 #include <cstdint>
 #include <cassert>
 #include <vector>
@@ -30,11 +31,14 @@
 #include <vulkan/vulkan.h>
 #if defined(KUJOGFX_PLATFORM_WINDOWS)
 #include <windows.h>
+#include <comutil.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <vulkan/vulkan_win32.h>
+#if !defined(KUJOGFX_USE_GLES)
 #define GLAD_WGL_IMPLEMENTATION
 #include <external/glad/wgl.h>
+#endif
 #elif defined(KUJOGFX_PLATFORM_LINUX)
 #if defined(KUJOGFX_IS_WAYLAND)
 #include <vulkan/vulkan_wayland.h>
@@ -47,8 +51,14 @@
 #define GLAD_EGL_IMPLEMENTATION
 #include <external/glad/egl.h>
 #endif
+#if defined(KUJOGFX_USE_GLES)
+#define GLAD_GLES2_IMPLEMENTATION
+#define GLAD_EGL_IMPLEMENTATION
+#include <external/glad/gles2.h>
+#else
 #define GLAD_GL_IMPLEMENTATION
 #include <external/glad/gl.h>
+#endif
 #include "glslang/Public/ShaderLang.h"
 #include "glslang/SPIRV/GlslangToSpv.h"
 #include "spirv_cross/spirv_glsl.hpp"
@@ -76,6 +86,9 @@ namespace kujogfx
 	void *display_handle = NULL;
 	void *context_handle = NULL;
     };
+
+    static constexpr uint32_t max_vertex_attribs = 16;
+    static constexpr uint32_t max_vertex_buffer_bind_slots = 8;
 
     struct KujoGFXColor
     {
@@ -169,426 +182,630 @@ namespace kujogfx
 	}
     };
 
-    struct KujoGFXShader
+    class KujoGFXShader
     {
-	enum GLSLShaderLang : int
-	{
-	    GLSL140,
-	    GLSL300ES,
-	    GLSL100ES
-	};
-
-	string vertex_source = "";
-	string fragment_source = "";
-
-	vector<uint32_t> vert_spirv;
-	vector<uint32_t> frag_spirv;
-
-	string vertex_out_src = "";
-	string fragment_out_src = "";
-
-	bool is_compiled = false;
-
-	KujoGFXShader() : is_compiled(false)
-	{
-	}
-
-	KujoGFXShader(string vert_source, string frag_source)
-	{
-	    setShaderSource(vert_source, frag_source);
-	}
-
-	void setShaderSource(string vert_source, string frag_source)
-	{
-	    if (is_compiled)
+	public:
+	    enum GLSLShaderLang : int
 	    {
-		if ((vertex_source != vert_source) || (fragment_source != frag_source))
+		GLSL330,
+		GLSL300ES
+	    };
+
+	    struct KujoGFXSemantic
+	    {
+		string name = "";
+		uint32_t index = 0;
+	    };
+
+	    vector<uint32_t> vert_spirv;
+	    vector<uint32_t> frag_spirv;
+
+	    string vertex_out_src = "";
+	    string fragment_out_src = "";
+
+	    vector<string> glsl_names;
+	    vector<KujoGFXSemantic> hlsl_semantics;
+	    vector<uint32_t> spirv_locations;
+
+	    bool is_compiled = false;
+
+	    uint32_t getID() const
+	    {
+		return id;
+	    }
+
+	    KujoGFXShader() : is_compiled(false), id(generateID())
+	    {
+	    }
+
+	    KujoGFXShader(string vert_source, string frag_source) : id(generateID())
+	    {
+		setShaderSource(vert_source, frag_source);
+	    }
+
+	    void setShaderSource(string vert_source, string frag_source)
+	    {
+		if (is_compiled)
 		{
-		    is_compiled = false;
+		    if ((vertex_source != vert_source) || (fragment_source != frag_source))
+		    {
+			is_compiled = false;
+		    }
 		}
+
+		vertex_source = vert_source;
+		fragment_source = frag_source;
 	    }
 
-	    vertex_source = vert_source;
-	    fragment_source = frag_source;
-	}
-
-	bool toSPIRV(EShLanguage shader_type, string source, vector<uint32_t> &spv_code, bool is_molten_vk)
-	{
-	    glslang::InitializeProcess();
-
-	    glslang::TShader shader(shader_type);
-	    glslang::TProgram program;
-
-	    const char *shader_str[1];
-
-	    TBuiltInResource resources = {};
-	    initResources(resources);
-
-	    EShMessages messages = static_cast<EShMessages>(EShMsgDefault | EShMsgSpvRules);
-
-	    if (is_molten_vk)
+	    bool translateHLSL()
 	    {
-		messages = static_cast<EShMessages>(messages | EShMsgVulkanRules);
-	    }
-
-	    shader_str[0] = source.data();
-	    shader.setStrings(shader_str, 1);
-	    shader.setEnvInput(glslang::EShSourceGlsl, shader_type, glslang::EShClientOpenGL, 100);
-	    shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_0);
-	    shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
-
-	    if (!shader.parse(&resources, 100, false, messages))
-	    {
-		cout << "Could not parse shader!" << endl;
-		cout << "Error log: " << endl;
-		cout << shader.getInfoLog() << endl;
-		cout << shader.getInfoDebugLog() << endl;
-		cout.flush();
-		return false;
-	    }
-
-	    program.addShader(&shader);
-
-	    if (!program.link(messages))
-	    {
-		cout << "Could not link shader program!" << endl;
-		cout << "Error log: " << endl;
-		cout << shader.getInfoLog() << endl;
-		cout << shader.getInfoDebugLog() << endl;
-		cout.flush();
-		return false;
-	    }
-
-	    if (!program.mapIO())
-	    {
-		cout << "Could not map shader program I/O!" << endl;
-		cout << "Error log: " << endl;
-		cout << shader.getInfoLog() << endl;
-		cout << shader.getInfoDebugLog() << endl;
-		cout.flush();
-		return false;
-	    }
-
-	    glslang::GlslangToSpv(*program.getIntermediate(shader_type), spv_code);
-	    glslang::FinalizeProcess();
-	    return true;
-	}
-
-	bool toHLSL(vector<uint32_t> spv_code, string &out_hlsl)
-	{
-	    CompilerHLSL compiler(spv_code);
-	    CompilerHLSL::Options hlsl_options;
-	    hlsl_options.shader_model = 40;
-	    compiler.set_hlsl_options(hlsl_options);
-
-	    out_hlsl = compiler.compile();
-
-	    if (out_hlsl.empty())
-	    {
-		cout << "Could not compile shader to HLSL!" << endl;
-		return false;
-	    }
-
-	    return true;
-	}
-
-	bool toGLSL(vector<uint32_t> spv_code, GLSLShaderLang shader_lang, string &out_glsl)
-	{
-	    CompilerGLSL compiler(spv_code);
-	    CompilerGLSL::Options glsl_options;
-
-	    switch (shader_lang)
-	    {
-		case GLSL140:
+		if (is_compiled)
 		{
-		    glsl_options.version = 140;
-		    glsl_options.es = false;
+		    return true;
 		}
-		break;
-		case GLSL300ES:
+
+		if (vertex_source.empty())
 		{
-		    glsl_options.version = 300;
-		    glsl_options.es = true;
-		}
-		break;
-		case GLSL100ES:
-		{
-		    glsl_options.version = 100;
-		    glsl_options.es = true;
-		}
-		break;
-		default:
-		{
-		    cout << "Unrecognized GLSL version type of " << dec << int(shader_lang) << endl;
+		    cout << "Vertex shader is empty!" << endl;
 		    return false;
 		}
-		break;
-	    }
 
-	    glsl_options.vulkan_semantics = false;
-	    glsl_options.enable_420pack_extension = false;
-	    compiler.set_common_options(glsl_options);
+		if (fragment_source.empty())
+		{
+		    cout << "Fragment shader is empty!" << endl;
+		    return false;
+		}
 
-	    out_glsl = compiler.compile();
+		if (!toSPIRV(EShLangVertex, vertex_source, vert_spirv, false))
+		{
+		    cout << "Could not compile vertex shader to SPIRV!" << endl;
+		    return false;
+		}
 
-	    if (out_glsl.empty())
-	    {
-		cout << "Could not compile shader to GLSL!" << endl;
-		return false;
-	    }
+		if (!toSPIRV(EShLangFragment, fragment_source, frag_spirv, false))
+		{
+		    cout << "Could not compile fragmemt shader to SPIRV!" << endl;
+		    return false;
+		}
 
-	    return true;
-	}
+		if (!toHLSL(vert_spirv, vertex_out_src))
+		{
+		    cout << "Could not translate vertex shader SPIRV to HLSL!" << endl;
+		    return false;
+		}
 
-	bool translateHLSL()
-	{
-	    if (is_compiled)
-	    {
+		if (!toHLSL(frag_spirv, fragment_out_src))
+		{
+		    cout << "Could not translate fragment shader SPIRV to HLSL!" << endl;
+		    return false;
+		}
+
+		fetchSemanticsHLSL();
+
+		is_compiled = true;
 		return true;
 	    }
 
-	    if (vertex_source.empty())
+	    GLSLShaderLang getShaderLang()
 	    {
-		cout << "Vertex shader is empty" << endl;
-		return false;
+		#if defined(KUJOGFX_PLATFORM_EMSCRIPTEN) || defined(KUJOGFX_PLATFORM_ANDROID)
+		return GLSL300ES;
+		#elif defined(KUJOGFX_USE_GLES)
+		return GLSL300ES;
+		#else
+		return GLSL330;
+		#endif
 	    }
 
-	    if (fragment_source.empty())
+	    bool translateGLSL()
 	    {
-		cout << "Fragment shader is empty" << endl;
-		return false;
+		return translateGLSL(getShaderLang());
 	    }
 
-	    if (!toSPIRV(EShLangVertex, vertex_source, vert_spirv, false))
+	    bool translateGLSL(GLSLShaderLang shader_lang)
 	    {
-		return false;
-	    }
+		if (is_compiled)
+		{
+		    return true;
+		}
 
-	    if (!toSPIRV(EShLangFragment, fragment_source, frag_spirv, false))
-	    {
-		return false;
-	    }
+		if (vertex_source.empty())
+		{
+		    cout << "Vertex shader is empty!" << endl;
+		    return false;
+		}
 
-	    if (!toHLSL(vert_spirv, vertex_out_src))
-	    {
-		return false;
-	    }
+		if (fragment_source.empty())
+		{
+		    cout << "Fragment shader is empty!" << endl;
+		    return false;
+		}
 
-	    if (!toHLSL(frag_spirv, fragment_out_src))
-	    {
-		return false;
-	    }
+		if (!toSPIRV(EShLangVertex, vertex_source, vert_spirv, false))
+		{
+		    cout << "Could not compile vertex shader to SPIRV!" << endl;
+		    return false;
+		}
 
-	    is_compiled = true;
-	    return true;
-	}
+		if (!toSPIRV(EShLangFragment, fragment_source, frag_spirv, false))
+		{
+		    cout << "Could not compile fragment shader to SPIRV!" << endl;
+		    return false;
+		}
 
-	bool translateGLSL()
-	{
-	    #if defined(KUJOGFX_PLATFORM_ANDROID)
-	    GLSLShaderLang shader_lang = GLSL300ES;
-	    #elif defined(KUJOGFX_PLATFORM_EMSCRIPTEN)
-	    GLSLShaderLang shader_lang = GLSL300ES;
-	    #else
-	    GLSLShaderLang shader_lang = GLSL140;
-	    #endif
+		if (!toGLSL(vert_spirv, shader_lang, vertex_out_src))
+		{
+		    cout << "Could not translate vertex shader SPIRV to GLSL!" << endl;
+		    return false;
+		}
 
-	    return translateGLSL(shader_lang);
-	}
+		if (!toGLSL(frag_spirv, shader_lang, fragment_out_src))
+		{
+		    cout << "Could not translate fragment shader SPIRV to GLSL!" << endl;
+		    return false;
+		}
 
-	bool translateGLSL(GLSLShaderLang shader_lang)
-	{
-	    if (is_compiled)
-	    {
+		fetchNamesGLSL();
+
+		/*
+		cout << "Vertex shader code: " << endl;
+		cout << vertex_out_src << endl;
+		cout << "Fragment shader code: " << endl;
+		cout << fragment_out_src << endl;
+		cout << endl;
+		*/
+
+		is_compiled = true;
 		return true;
 	    }
 
-	    if (vertex_source.empty())
+	    bool translateSPIRV()
 	    {
-		cout << "Vertex shader is empty" << endl;
-		return false;
+		#if defined(KUJOGFX_PLATFORM_MACOS)
+		bool is_molten_vk = true;
+		#else
+		bool is_molten_vk = false;
+		#endif
+
+		return translateSPIRV(is_molten_vk);
 	    }
 
-	    if (fragment_source.empty())
+	    bool translateSPIRV(bool is_molten_vk)
 	    {
-		cout << "Fragment shader is empty" << endl;
-		return false;
-	    }
+		if (is_compiled)
+		{
+		    return true;
+		}
 
-	    if (!toSPIRV(EShLangVertex, vertex_source, vert_spirv, false))
-	    {
-		return false;
-	    }
+		if (vertex_source.empty())
+		{
+		    cout << "Vertex shader is empty" << endl;
+		    return false;
+		}
 
-	    if (!toSPIRV(EShLangFragment, fragment_source, frag_spirv, false))
-	    {
-		return false;
-	    }
+		if (fragment_source.empty())
+		{
+		    cout << "Fragment shader is empty" << endl;
+		    return false;
+		}
 
-	    if (!toGLSL(vert_spirv, shader_lang, vertex_out_src))
-	    {
-		return false;
-	    }
+		if (!toSPIRV(EShLangVertex, vertex_source, vert_spirv, is_molten_vk))
+		{
+		    cout << "Could not compile vertex shader!" << endl;
+		    return false;
+		}
 
-	    if (!toGLSL(frag_spirv, shader_lang, fragment_out_src))
-	    {
-		return false;
-	    }
+		if (!toSPIRV(EShLangFragment, fragment_source, frag_spirv, is_molten_vk))
+		{
+		    cout << "Could not compile fragment shader!" << endl;
+		    return false;
+		}
 
-	    is_compiled = true;
-	    return true;
-	}
+		fetchLocationsSPIRV();
 
-	bool translateSPIRV()
-	{
-	    #if defined(KUJOGFX_PLATFORM_MACOS)
-	    bool is_molten_vk = true;
-	    #else
-	    bool is_molten_vk = false;
-	    #endif
-
-	    return translateSPIRV(is_molten_vk);
-	}
-
-	bool translateSPIRV(bool is_molten_vk)
-	{
-	    if (is_compiled)
-	    {
+		is_compiled = true;
 		return true;
 	    }
 
-	    if (vertex_source.empty())
+	private:
+	    string vertex_source = "";
+	    string fragment_source = "";
+
+	    uint32_t id;
+
+	    void fetchSemanticsHLSL()
 	    {
-		cout << "Vertex shader is empty" << endl;
-		return false;
+		hlsl_semantics.clear();
+		CompilerHLSL compiler(vert_spirv);
+
+		auto resources = compiler.get_shader_resources();
+
+		for (auto &res : resources.stage_inputs)
+		{
+		    uint32_t slot = compiler.get_decoration(res.id, spv::DecorationLocation);
+		    KujoGFXSemantic semantic = {"TEXCOORD", slot};
+		    hlsl_semantics.push_back(semantic);
+		}
 	    }
 
-	    if (fragment_source.empty())
+	    void fetchNamesGLSL()
 	    {
-		cout << "Fragment shader is empty" << endl;
-		return false;
+		glsl_names.clear();
+		CompilerGLSL compiler(vert_spirv);
+
+		auto resources = compiler.get_shader_resources();
+
+		for (auto &res : resources.stage_inputs)
+		{
+		    glsl_names.push_back(res.name);
+		}
 	    }
 
-	    if (!toSPIRV(EShLangVertex, vertex_source, vert_spirv, is_molten_vk))
+	    void fetchLocationsSPIRV()
 	    {
-		cout << "Could not compile vertex shader!" << endl;
-		return false;
+		spirv_locations.clear();
+		Compiler compiler(vert_spirv);
+
+		auto resources = compiler.get_shader_resources();
+
+		for (auto &res : resources.stage_inputs)
+		{
+		    uint32_t location = compiler.get_decoration(res.id, spv::DecorationLocation);
+		    // cout << "Location of input of '" << res.name << "': " << dec << location << endl;
+		    spirv_locations.push_back(location);
+		}
 	    }
 
-	    if (!toSPIRV(EShLangFragment, fragment_source, frag_spirv, is_molten_vk))
+	    void initResources(TBuiltInResource &resources)
 	    {
-		cout << "Could not compile fragment shader!" << endl;
-		return false;
+		resources.maxLights = 32;
+		resources.maxClipPlanes = 6;
+		resources.maxTextureUnits = 32;
+		resources.maxTextureCoords = 32;
+		resources.maxVertexAttribs = 64;
+		resources.maxVertexUniformComponents = 4096;
+		resources.maxVaryingFloats = 64;
+		resources.maxVertexTextureImageUnits = 32;
+		resources.maxCombinedTextureImageUnits = 80;
+		resources.maxTextureImageUnits = 32;
+		resources.maxFragmentUniformComponents = 4096;
+		resources.maxDrawBuffers = 32;
+		resources.maxVertexUniformVectors = 128;
+		resources.maxVaryingVectors = 8;
+		resources.maxFragmentUniformVectors = 16;
+		resources.maxVertexOutputVectors = 16;
+		resources.maxFragmentInputVectors = 15;
+		resources.minProgramTexelOffset = -8;
+		resources.maxProgramTexelOffset = 7;
+		resources.maxClipDistances = 8;
+		resources.maxComputeWorkGroupCountX = 65535;
+		resources.maxComputeWorkGroupCountY = 65535;
+		resources.maxComputeWorkGroupCountZ = 65535;
+		resources.maxComputeWorkGroupSizeX = 1024;
+		resources.maxComputeWorkGroupSizeY = 1024;
+		resources.maxComputeWorkGroupSizeZ = 64;
+		resources.maxComputeUniformComponents = 1024;
+		resources.maxComputeTextureImageUnits = 16;
+		resources.maxComputeImageUniforms = 8;
+		resources.maxComputeAtomicCounters = 8;
+		resources.maxComputeAtomicCounterBuffers = 1;
+		resources.maxVaryingComponents = 60;
+		resources.maxVertexOutputComponents = 64;
+		resources.maxGeometryInputComponents = 64;
+		resources.maxGeometryOutputComponents = 128;
+		resources.maxFragmentInputComponents = 128;
+		resources.maxImageUnits = 8;
+		resources.maxCombinedImageUnitsAndFragmentOutputs = 8;
+		resources.maxCombinedShaderOutputResources = 8;
+		resources.maxImageSamples = 0;
+		resources.maxVertexImageUniforms = 0;
+		resources.maxTessControlImageUniforms = 0;
+		resources.maxTessEvaluationImageUniforms = 0;
+		resources.maxGeometryImageUniforms = 0;
+		resources.maxFragmentImageUniforms = 8;
+		resources.maxCombinedImageUniforms = 8;
+		resources.maxGeometryTextureImageUnits = 16;
+		resources.maxGeometryOutputVertices = 256;
+		resources.maxGeometryTotalOutputComponents = 1024;
+		resources.maxGeometryUniformComponents = 1024;
+		resources.maxGeometryVaryingComponents = 64;
+		resources.maxTessControlInputComponents = 128;
+		resources.maxTessControlOutputComponents = 128;
+		resources.maxTessControlTextureImageUnits = 16;
+		resources.maxTessControlUniformComponents = 1024;
+		resources.maxTessControlTotalOutputComponents = 4096;
+		resources.maxTessEvaluationInputComponents = 128;
+		resources.maxTessEvaluationOutputComponents = 128;
+		resources.maxTessEvaluationTextureImageUnits = 16;
+		resources.maxTessEvaluationUniformComponents = 1024;
+		resources.maxTessPatchComponents = 120;
+		resources.maxPatchVertices = 32;
+		resources.maxTessGenLevel = 64;
+		resources.maxViewports = 16;
+		resources.maxVertexAtomicCounters = 0;
+		resources.maxTessControlAtomicCounters = 0;
+		resources.maxTessEvaluationAtomicCounters = 0;
+		resources.maxGeometryAtomicCounters = 0;
+		resources.maxFragmentAtomicCounters = 8;
+		resources.maxCombinedAtomicCounters = 8;
+		resources.maxAtomicCounterBindings = 1;
+		resources.maxVertexAtomicCounterBuffers = 0;
+		resources.maxTessControlAtomicCounterBuffers = 0;
+		resources.maxTessEvaluationAtomicCounterBuffers = 0;
+		resources.maxGeometryAtomicCounterBuffers = 0;
+		resources.maxFragmentAtomicCounterBuffers = 1;
+		resources.maxCombinedAtomicCounterBuffers = 1;
+		resources.maxAtomicCounterBufferSize = 16384;
+		resources.maxTransformFeedbackBuffers = 4;
+		resources.maxTransformFeedbackInterleavedComponents = 64;
+		resources.maxCullDistances = 8;
+		resources.maxCombinedClipAndCullDistances = 8;
+		resources.maxSamples = 4;
+		resources.maxMeshOutputVerticesNV = 256;
+		resources.maxMeshOutputPrimitivesNV = 512;
+		resources.maxMeshWorkGroupSizeX_NV = 32;
+		resources.maxMeshWorkGroupSizeY_NV = 1;
+		resources.maxMeshWorkGroupSizeZ_NV = 1;
+		resources.maxTaskWorkGroupSizeX_NV = 32;
+		resources.maxTaskWorkGroupSizeY_NV = 1;
+		resources.maxTaskWorkGroupSizeZ_NV = 1;
+		resources.maxMeshViewCountNV = 4;
+		resources.limits.nonInductiveForLoops = 1;
+		resources.limits.whileLoops = 1;
+		resources.limits.doWhileLoops = 1;
+		resources.limits.generalUniformIndexing = 1;
+		resources.limits.generalAttributeMatrixVectorIndexing = 1;
+		resources.limits.generalVaryingIndexing = 1;
+		resources.limits.generalSamplerIndexing = 1;
+		resources.limits.generalVariableIndexing = 1;
+		resources.limits.generalConstantMatrixVectorIndexing = 1;
 	    }
 
-	    is_compiled = true;
-	    return true;
-	}
+	    bool toSPIRV(EShLanguage shader_type, string source, vector<uint32_t> &spv_code, bool is_molten_vk)
+	    {
+		glslang::InitializeProcess();
 
-	void initResources(TBuiltInResource &resources)
-	{
-	    resources.maxLights = 32;
-	    resources.maxClipPlanes = 6;
-	    resources.maxTextureUnits = 32;
-	    resources.maxTextureCoords = 32;
-	    resources.maxVertexAttribs = 64;
-	    resources.maxVertexUniformComponents = 4096;
-	    resources.maxVaryingFloats = 64;
-	    resources.maxVertexTextureImageUnits = 32;
-	    resources.maxCombinedTextureImageUnits = 80;
-	    resources.maxTextureImageUnits = 32;
-	    resources.maxFragmentUniformComponents = 4096;
-	    resources.maxDrawBuffers = 32;
-	    resources.maxVertexUniformVectors = 128;
-	    resources.maxVaryingVectors = 8;
-	    resources.maxFragmentUniformVectors = 16;
-	    resources.maxVertexOutputVectors = 16;
-	    resources.maxFragmentInputVectors = 15;
-	    resources.minProgramTexelOffset = -8;
-	    resources.maxProgramTexelOffset = 7;
-	    resources.maxClipDistances = 8;
-	    resources.maxComputeWorkGroupCountX = 65535;
-	    resources.maxComputeWorkGroupCountY = 65535;
-	    resources.maxComputeWorkGroupCountZ = 65535;
-	    resources.maxComputeWorkGroupSizeX = 1024;
-	    resources.maxComputeWorkGroupSizeY = 1024;
-	    resources.maxComputeWorkGroupSizeZ = 64;
-	    resources.maxComputeUniformComponents = 1024;
-	    resources.maxComputeTextureImageUnits = 16;
-	    resources.maxComputeImageUniforms = 8;
-	    resources.maxComputeAtomicCounters = 8;
-	    resources.maxComputeAtomicCounterBuffers = 1;
-	    resources.maxVaryingComponents = 60;
-	    resources.maxVertexOutputComponents = 64;
-	    resources.maxGeometryInputComponents = 64;
-	    resources.maxGeometryOutputComponents = 128;
-	    resources.maxFragmentInputComponents = 128;
-	    resources.maxImageUnits = 8;
-	    resources.maxCombinedImageUnitsAndFragmentOutputs = 8;
-	    resources.maxCombinedShaderOutputResources = 8;
-	    resources.maxImageSamples = 0;
-	    resources.maxVertexImageUniforms = 0;
-	    resources.maxTessControlImageUniforms = 0;
-	    resources.maxTessEvaluationImageUniforms = 0;
-	    resources.maxGeometryImageUniforms = 0;
-	    resources.maxFragmentImageUniforms = 8;
-	    resources.maxCombinedImageUniforms = 8;
-	    resources.maxGeometryTextureImageUnits = 16;
-	    resources.maxGeometryOutputVertices = 256;
-	    resources.maxGeometryTotalOutputComponents = 1024;
-	    resources.maxGeometryUniformComponents = 1024;
-	    resources.maxGeometryVaryingComponents = 64;
-	    resources.maxTessControlInputComponents = 128;
-	    resources.maxTessControlOutputComponents = 128;
-	    resources.maxTessControlTextureImageUnits = 16;
-	    resources.maxTessControlUniformComponents = 1024;
-	    resources.maxTessControlTotalOutputComponents = 4096;
-	    resources.maxTessEvaluationInputComponents = 128;
-	    resources.maxTessEvaluationOutputComponents = 128;
-	    resources.maxTessEvaluationTextureImageUnits = 16;
-	    resources.maxTessEvaluationUniformComponents = 1024;
-	    resources.maxTessPatchComponents = 120;
-	    resources.maxPatchVertices = 32;
-	    resources.maxTessGenLevel = 64;
-	    resources.maxViewports = 16;
-	    resources.maxVertexAtomicCounters = 0;
-	    resources.maxTessControlAtomicCounters = 0;
-	    resources.maxTessEvaluationAtomicCounters = 0;
-	    resources.maxGeometryAtomicCounters = 0;
-	    resources.maxFragmentAtomicCounters = 8;
-	    resources.maxCombinedAtomicCounters = 8;
-	    resources.maxAtomicCounterBindings = 1;
-	    resources.maxVertexAtomicCounterBuffers = 0;
-	    resources.maxTessControlAtomicCounterBuffers = 0;
-	    resources.maxTessEvaluationAtomicCounterBuffers = 0;
-	    resources.maxGeometryAtomicCounterBuffers = 0;
-	    resources.maxFragmentAtomicCounterBuffers = 1;
-	    resources.maxCombinedAtomicCounterBuffers = 1;
-	    resources.maxAtomicCounterBufferSize = 16384;
-	    resources.maxTransformFeedbackBuffers = 4;
-	    resources.maxTransformFeedbackInterleavedComponents = 64;
-	    resources.maxCullDistances = 8;
-	    resources.maxCombinedClipAndCullDistances = 8;
-	    resources.maxSamples = 4;
-	    resources.maxMeshOutputVerticesNV = 256;
-	    resources.maxMeshOutputPrimitivesNV = 512;
-	    resources.maxMeshWorkGroupSizeX_NV = 32;
-	    resources.maxMeshWorkGroupSizeY_NV = 1;
-	    resources.maxMeshWorkGroupSizeZ_NV = 1;
-	    resources.maxTaskWorkGroupSizeX_NV = 32;
-	    resources.maxTaskWorkGroupSizeY_NV = 1;
-	    resources.maxTaskWorkGroupSizeZ_NV = 1;
-	    resources.maxMeshViewCountNV = 4;
-	    resources.limits.nonInductiveForLoops = 1;
-	    resources.limits.whileLoops = 1;
-	    resources.limits.doWhileLoops = 1;
-	    resources.limits.generalUniformIndexing = 1;
-	    resources.limits.generalAttributeMatrixVectorIndexing = 1;
-	    resources.limits.generalVaryingIndexing = 1;
-	    resources.limits.generalSamplerIndexing = 1;
-	    resources.limits.generalVariableIndexing = 1;
-	    resources.limits.generalConstantMatrixVectorIndexing = 1;
-	}
+		glslang::TShader shader(shader_type);
+		glslang::TProgram program;
+
+		const char *shader_str[1];
+
+		TBuiltInResource resources = {};
+		initResources(resources);
+
+		EShMessages messages = static_cast<EShMessages>(EShMsgDefault | EShMsgSpvRules);
+
+		if (is_molten_vk)
+		{
+		    messages = static_cast<EShMessages>(messages | EShMsgVulkanRules);
+		}
+
+		shader_str[0] = source.data();
+		shader.setStrings(shader_str, 1);
+		shader.setEnvInput(glslang::EShSourceGlsl, shader_type, glslang::EShClientOpenGL, 100);
+		shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_0);
+		shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
+
+		if (!shader.parse(&resources, 100, false, messages))
+		{
+		    cout << "Could not parse shader!" << endl;
+		    cout << "Error log: " << endl;
+		    cout << shader.getInfoLog() << endl;
+		    cout << shader.getInfoDebugLog() << endl;
+		    cout.flush();
+		    return false;
+		}
+
+		program.addShader(&shader);
+
+		if (!program.link(messages))
+		{
+		    cout << "Could not link shader program!" << endl;
+		    cout << "Error log: " << endl;
+		    cout << shader.getInfoLog() << endl;
+		    cout << shader.getInfoDebugLog() << endl;
+		    cout.flush();
+		    return false;
+		}
+
+		if (!program.mapIO())
+		{
+		    cout << "Could not map shader program I/O!" << endl;
+		    cout << "Error log: " << endl;
+		    cout << shader.getInfoLog() << endl;
+		    cout << shader.getInfoDebugLog() << endl;
+		    cout.flush();
+		    return false;
+		}
+
+		glslang::GlslangToSpv(*program.getIntermediate(shader_type), spv_code);
+		glslang::FinalizeProcess();
+		return true;
+	    }
+
+	    bool toHLSL(vector<uint32_t> spv_code, string &out_hlsl)
+	    {
+		CompilerHLSL compiler(spv_code);
+		CompilerHLSL::Options hlsl_options;
+		hlsl_options.shader_model = 40;
+		compiler.set_hlsl_options(hlsl_options);
+
+		out_hlsl = compiler.compile();
+
+		if (out_hlsl.empty())
+		{
+		    cout << "Could not compile shader to HLSL!" << endl;
+		    return false;
+		}
+
+		return true;
+	    }
+
+	    bool toGLSL(vector<uint32_t> spv_code, GLSLShaderLang shader_lang, string &out_glsl)
+	    {
+		CompilerGLSL compiler(spv_code);
+		CompilerGLSL::Options glsl_options;
+
+		switch (shader_lang)
+		{
+		    case GLSL330:
+		    {
+			glsl_options.version = 330;
+			glsl_options.es = false;
+		    }
+		    break;
+		    case GLSL300ES:
+		    {
+			glsl_options.version = 300;
+			glsl_options.es = true;
+		    }
+		    break;
+		    default:
+		    {
+			cout << "Unrecognized GLSL version type of " << dec << int(shader_lang) << endl;
+			return false;
+		    }
+		    break;
+		}
+
+		glsl_options.vulkan_semantics = false;
+		glsl_options.enable_420pack_extension = false;
+		compiler.set_common_options(glsl_options);
+
+		out_glsl = compiler.compile();
+
+		if (out_glsl.empty())
+		{
+		    cout << "Could not compile shader to GLSL!" << endl;
+		    return false;
+		}
+
+		return true;
+	    }
+
+	    static atomic<uint32_t> next_id;
+
+	    static uint32_t generateID()
+	    {
+		return next_id++;
+	    }
+    };
+
+    class KujoGFXBuffer
+    {
+	public:
+	    KujoGFXBuffer() : is_created(false), id(generateID())
+	    {
+
+	    }
+
+	    void* getData()
+	    {
+		return data_ptr;
+	    }
+
+	    size_t getSize()
+	    {
+		return data_size;
+	    }
+
+	    template<typename T, size_t N>
+	    void setData(T (&arr)[N])
+	    {
+		data_ptr = reinterpret_cast<void*>(arr);
+		data_size = (N * sizeof(T));
+	    }
+
+	    template<typename T, size_t N>
+	    void setData(const T (&arr)[N])
+	    {
+		data_ptr = reinterpret_cast<void*>(const_cast<T*>(arr));
+		data_size = (N * sizeof(T));
+	    }
+
+	    uint32_t getID() const
+	    {
+		return id;
+	    }
+
+	    bool isCreated()
+	    {
+		return is_created;
+	    }
+
+	    void setCreated()
+	    {
+		is_created = true;
+	    }
+
+	private:
+	    void *data_ptr = NULL;
+	    size_t data_size = 0;
+
+	    bool is_created = false;
+
+	    uint32_t id;
+	    static atomic<uint32_t> next_id;
+
+	    static uint32_t generateID()
+	    {
+		return next_id++;
+	    }
+    };
+
+    class KujoGFXBindings
+    {
+	public:
+	    KujoGFXBindings()
+	    {
+
+	    }
+
+	    array<KujoGFXBuffer, max_vertex_buffer_bind_slots> vertex_buffers;
+    };
+
+    enum KujoGFXVertexFormat : int
+    {
+	VertexFormatInvalid = 0,
+	VertexFormatFloat3,
+	VertexFormatFloat4
+    };
+
+    class KujoGFXVertexAttribute
+    {
+	public:
+	    KujoGFXVertexAttribute()
+	    {
+
+	    }
+
+	    KujoGFXVertexFormat format = VertexFormatInvalid;
+	    size_t offset = 0;
+	    size_t buffer_index = 0;
+    };
+
+    class KujoGFXVertexBufferLayout
+    {
+	public:
+	    KujoGFXVertexBufferLayout()
+	    {
+
+	    }
+
+	    size_t stride = 0;
+    };
+
+    class KujoGFXVertexLayout
+    {
+	public:
+	    KujoGFXVertexLayout()
+	    {
+		vertex_buffer_layout_active.fill(false);
+	    }
+
+	    array<KujoGFXVertexAttribute, max_vertex_attribs> attribs;
+	    array<KujoGFXVertexBufferLayout, max_vertex_buffer_bind_slots> buffers;
+	    array<bool, max_vertex_buffer_bind_slots> vertex_buffer_layout_active;
     };
 
     class KujoGFXPipeline
@@ -599,10 +816,16 @@ namespace kujogfx
 	    }
 
 	    KujoGFXShader shader;
+	    KujoGFXVertexLayout layout;
 	    KujoGFXPrimitiveType primitive_type;
-	    const uint32_t id;
+
+	    uint32_t getID() const
+	    {
+		return id;
+	    }
 
 	private:
+	    uint32_t id;
 	    static atomic<uint32_t> next_id;
 
 	    static uint32_t generateID()
@@ -611,6 +834,8 @@ namespace kujogfx
 	    }
     };
 
+    atomic<uint32_t> KujoGFXShader::next_id{1};
+    atomic<uint32_t> KujoGFXBuffer::next_id{1};
     atomic<uint32_t> KujoGFXPipeline::next_id{1};
 
     struct KujoGFXDraw
@@ -636,6 +861,7 @@ namespace kujogfx
 	CommandBeginPass,
 	CommandEndPass,
 	CommandApplyPipeline,
+	CommandApplyBindings,
 	CommandDraw,
 	CommandCommit
     };
@@ -646,6 +872,7 @@ namespace kujogfx
 	KujoGFXPass current_pass;
 	KujoGFXPipeline current_pipeline;
 	KujoGFXDraw current_draw_call;
+	KujoGFXBindings current_bindings;
 
 	KujoGFXCommand() : cmd_type(CommandNop)
 	{
@@ -668,6 +895,11 @@ namespace kujogfx
 	}
 
 	KujoGFXCommand(KujoGFXDraw draw_call) : cmd_type(CommandDraw), current_draw_call(draw_call)
+	{
+
+	}
+
+	KujoGFXCommand(KujoGFXBindings bindings) : cmd_type(CommandApplyBindings), current_bindings(bindings)
 	{
 
 	}
@@ -716,12 +948,22 @@ namespace kujogfx
 		return;
 	    }
 
-	    virtual void createPipeline(KujoGFXPipeline)
+	    virtual void createPipeline(KujoGFXPipeline&)
 	    {
 		return;
 	    }
 
 	    virtual void applyPipeline()
+	    {
+		return;
+	    }
+
+	    virtual void createBuffer(KujoGFXBuffer, size_t)
+	    {
+		return;
+	    }
+
+	    virtual void applyBindings(KujoGFXBindings)
 	    {
 		return;
 	    }
@@ -758,6 +1000,7 @@ namespace kujogfx
 	{
 	    ID3D11VertexShader *vert_shader = NULL;
 	    ID3D11PixelShader *pixel_shader = NULL;
+	    ID3D11InputLayout *vert_layout = NULL;
 	};
 
 	public:
@@ -799,13 +1042,30 @@ namespace kujogfx
 
 	    IDXGISwapChain *swapchain;
 	    ID3D11Device *d3d11_device;
+	    ID3D11Debug *d3d11_debug;
+	    ID3D11InfoQueue *d3d11_debug_queue;
 	    ID3D11DeviceContext *d3d11_dev_con;
 	    ID3D11RenderTargetView *render_target_view;
+
+	    ID3D11Buffer* vertex_buffer_data[max_vertex_buffer_bind_slots] = {NULL};
+	    vector<D3D11_INPUT_ELEMENT_DESC> layouts;
+	    UINT vb_strides[max_vertex_buffer_bind_slots];
 
 	    unordered_map<uint32_t, D3D11Pipeline> pipelines;
 	    D3D11Pipeline current_pipeline;
 
 	    KujoGFXPass current_pass;
+
+	    string hresToString(HRESULT hres)
+	    {
+		if (hres == S_OK)
+		{
+		    return "";
+		}
+
+		_com_error err(hres);
+		return err.ErrorMessage();
+	    }
 
 	    bool fetchWindowRes()
 	    {
@@ -861,7 +1121,7 @@ namespace kujogfx
 
 		HRESULT hres = D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION, &swapchain_desc, &swapchain, &d3d11_device, NULL, &d3d11_dev_con);
 
-		if (hres != S_OK)
+		if (FAILED(hres))
 		{
 		    cout << "Direct3D 11 could not be initialized!" << endl;
 		    return false;
@@ -890,6 +1150,12 @@ namespace kujogfx
 		    {
 			pipeline.pixel_shader->Release();
 			pipeline.pixel_shader = NULL;
+		    }
+
+		    if (pipeline.vert_layout != NULL)
+		    {
+			pipeline.vert_layout->Release();
+			pipeline.vert_layout = NULL;
 		    }
 		}
 
@@ -945,9 +1211,25 @@ namespace kujogfx
 		return;
 	    }
 
+	    DXGI_FORMAT getFormat(KujoGFXVertexFormat format)
+	    {
+		switch (format)
+		{
+		    case VertexFormatFloat3: return DXGI_FORMAT_R32G32B32_FLOAT; break;
+		    case VertexFormatFloat4: return DXGI_FORMAT_R32G32B32A32_FLOAT; break;
+		    case VertexFormatInvalid: return DXGI_FORMAT_UNKNOWN; break;
+		    default:
+		    {
+			cout << "Unrecoginzed vertex format of " << dec << int(format) << endl;
+			throw runtime_error("KujoGFX_D3D11 error");
+		    }
+		    break;
+		}
+	    }
+
 	    void setPipeline(KujoGFXPipeline pipeline)
 	    {
-		auto cached_pipeline = pipelines.find(pipeline.id);
+		auto cached_pipeline = pipelines.find(pipeline.getID());
 
 		if (cached_pipeline == pipelines.end())
 		{
@@ -958,7 +1240,7 @@ namespace kujogfx
 		current_pipeline = cached_pipeline->second;
 	    }
 
-	    void createPipeline(KujoGFXPipeline pipeline)
+	    void createPipeline(KujoGFXPipeline &pipeline)
 	    {
 		D3D11Pipeline new_pipeline;
 		auto shader = pipeline.shader;
@@ -971,6 +1253,7 @@ namespace kujogfx
 
 		string vertex_src = shader.vertex_out_src;
 		string pixel_src = shader.fragment_out_src;
+		auto semantics = shader.hlsl_semantics;
 
 		string vertex_log = "";
 		string pixel_log = "";
@@ -1010,17 +1293,110 @@ namespace kujogfx
 		    throw runtime_error("KujoGFX_D3D11 error");
 		}
 
+		for (size_t attr_index = 0; attr_index < max_vertex_attribs; attr_index++)
+		{
+		    auto attrib = pipeline.layout.attribs[attr_index];
+
+		    if (attrib.format == VertexFormatInvalid)
+		    {
+			break;
+		    }
+
+		    D3D11_INPUT_ELEMENT_DESC element_desc;
+		    ZeroMemory(&element_desc, sizeof(element_desc));
+		    element_desc.SemanticName = semantics.at(attr_index).name.c_str();
+		    element_desc.SemanticIndex = (UINT)semantics.at(attr_index).index;
+		    element_desc.Format = getFormat(attrib.format);
+		    element_desc.AlignedByteOffset = attrib.offset;
+		    element_desc.InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
+		    layouts.push_back(element_desc);
+		}
+
+		if (!layouts.empty())
+		{
+		    HRESULT hres = d3d11_device->CreateInputLayout(layouts.data(), layouts.size(), vert_buffer->GetBufferPointer(), vert_buffer->GetBufferSize(), &new_pipeline.vert_layout);
+
+		    if (FAILED(hres))
+		    {
+			cout << "Could not create input layout! Win32 error: " << hresToString(hres) << endl;
+			throw runtime_error("KujoGFX_D3D11 error");
+		    }
+		}
+
+		for (size_t i = 0; i < max_vertex_buffer_bind_slots; i++)
+		{
+		    if (pipeline.layout.vertex_buffer_layout_active[i])
+		    {
+			vb_strides[i] = (UINT)pipeline.layout.buffers[i].stride;
+		    }
+		    else
+		    {
+			vb_strides[i] = 0;
+		    }
+		}
+
 		vert_buffer->Release();
 		pixel_buffer->Release();
 		current_pipeline = new_pipeline;
-		pipelines.insert(make_pair(pipeline.id, new_pipeline));
+		pipelines.insert(make_pair(pipeline.getID(), new_pipeline));
 	    }
 
 	    void applyPipeline()
 	    {
+		d3d11_dev_con->IASetInputLayout(current_pipeline.vert_layout);
 		d3d11_dev_con->VSSetShader(current_pipeline.vert_shader, 0, 0);
 		d3d11_dev_con->PSSetShader(current_pipeline.pixel_shader, 0, 0);
 		d3d11_dev_con->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	    }
+
+	    D3D11_USAGE getUsage(KujoGFXBuffer)
+	    {
+		return D3D11_USAGE_DEFAULT;
+	    }
+
+	    D3D11_BIND_FLAG getBindFlags(KujoGFXBuffer)
+	    {
+		return D3D11_BIND_VERTEX_BUFFER;
+	    }
+
+	    D3D11_CPU_ACCESS_FLAG getCPUAccessFlags(KujoGFXBuffer)
+	    {
+		return (D3D11_CPU_ACCESS_FLAG)0;
+	    }
+
+	    D3D11_RESOURCE_MISC_FLAG getMiscFlags(KujoGFXBuffer)
+	    {
+		return (D3D11_RESOURCE_MISC_FLAG)0;
+	    }
+
+	    void createBuffer(KujoGFXBuffer buffer, size_t index)
+	    {
+		D3D11_BUFFER_DESC buffer_desc;
+		ZeroMemory(&buffer_desc, sizeof(buffer_desc));
+
+		buffer_desc.Usage = getUsage(buffer);
+		buffer_desc.ByteWidth = (UINT)buffer.getSize();
+		buffer_desc.BindFlags = getBindFlags(buffer);
+		buffer_desc.CPUAccessFlags = getCPUAccessFlags(buffer);
+		buffer_desc.MiscFlags = getMiscFlags(buffer);
+
+		D3D11_SUBRESOURCE_DATA buffer_data;
+		ZeroMemory(&buffer_data, sizeof(buffer_data));
+		buffer_data.pSysMem = buffer.getData();
+
+		HRESULT hres = d3d11_device->CreateBuffer(&buffer_desc, &buffer_data, &vertex_buffer_data[index]);
+
+		if (FAILED(hres))
+		{
+		    cout << "Failed to create buffer!" << endl;
+		    throw runtime_error("KujoGFX_D3D11 error");
+		}
+	    }
+
+	    void applyBindings(KujoGFXBindings bindings)
+	    {
+		UINT vb_offsets[max_vertex_buffer_bind_slots] = {{0}};
+		d3d11_dev_con->IASetVertexBuffers(0, max_vertex_buffer_bind_slots, vertex_buffer_data, vb_strides, vb_offsets);
 	    }
 
 	    void draw(KujoGFXDraw draw_call)
@@ -1062,16 +1438,26 @@ namespace kujogfx
 
     // TODO: Implement platform-specific code for the following platforms:
     // MacOS
-    // Linux
     // BSD
     // Android
     // Emscripten
 
     class KujoGFX_OpenGL : public KujoGFXBackend
     {
+	struct GLAttrib
+	{
+	    int8_t vb_index = -1;
+	    uint8_t size = 0;
+	    GLenum type;
+	    uint8_t stride = 0;
+	    int offset = 0;
+	    bool is_active = false;
+	};
+
 	struct GLPipeline
 	{
 	    GLuint program;
+	    array<GLAttrib, max_vertex_attribs> attribs;
 	};
 
 	public:
@@ -1102,23 +1488,50 @@ namespace kujogfx
 
 	    void *getContextHandle()
 	    {
-		#if defined(KUJOGFX_PLATFORM_WINDOWS)
+		#if defined(KUJOGFX_PLATFORM_WINDOWS) && !defined(KUJOGFX_USE_GLES)
 		return reinterpret_cast<void*>(m_hrc);
-		#elif defined(KUJOGFX_PLATFORM_LINUX)
-		return (void*)&m_context;
+		#elif !defined(KUJOGFX_PLATFORM_EMSCRIPTEN)
+		return reinterpret_cast<void*>(&m_context);
 		#else
 		return NULL;
 		#endif
 	    }
 
 	private:
+	    #if defined(KUJOGFX_PLATFORM_EMSCRIPTEN) || defined(KUJOGFX_PLATFORM_ANDROID) || defined(KUJOGFX_USE_GLES)
 	    static constexpr int gl_major_version = 3;
-	    static constexpr int gl_minor_version = 1;
+	    static constexpr int gl_minor_version = 0;
+	    #else
+	    static constexpr int gl_major_version = 3;
+	    static constexpr int gl_minor_version = 3;
+	    #endif
 
 	    int window_width = 0;
 	    int window_height = 0;
 	    void *win_handle = NULL;
 	    void *disp_handle = NULL;
+
+	    size_t gl_max_vertex_attribs = 0;
+	    GLenum vertex_buffer_targets[max_vertex_buffer_bind_slots] = {{0}};
+	    GLuint vertex_buffer_data[max_vertex_buffer_bind_slots] = {{0}};
+
+	    bool loadGL()
+	    {
+		#if defined(KUJOGFX_USE_GLES) || defined(KUJOGFX_PLATFORM_EMSCRIPTEN)
+		return (gladLoaderLoadGLES2() != 0);
+		#else
+		return (gladLoaderLoadGL() != 0);
+		#endif
+	    }
+
+	    void unloadGL()
+	    {
+		#if defined(KUJOGFX_USE_GLES) || defined(KUJOGFX_PLATFORM_EMSCRIPTEN)
+		gladLoaderUnloadGLES2();
+		#else
+		gladLoaderUnloadGL();
+		#endif
+	    }
 
 	    GLuint gl_vao;
 
@@ -1127,12 +1540,50 @@ namespace kujogfx
 	    unordered_map<uint32_t, GLPipeline> pipelines;
 	    GLPipeline current_pipeline;
 
-	    #if defined(KUJOGFX_PLATFORM_WINDOWS)
+	    bool createGLContext()
+	    {
+		#if defined(KUJOGFX_PLATFORM_WINDOWS) && !defined(KUJOGFX_USE_GLES)
+		return createWGLContext();
+		#else
+		return createEGLContext();
+		#endif
+	    }
+
+	    void deleteGLContext()
+	    {
+		#if defined(KUJOGFX_PLATFORM_WINDOWS) && !defined(KUJOGFX_USE_GLES)
+		deleteWGLContext();
+		#else
+		deleteEGLContext();
+		#endif
+	    }
+
+	    #if defined(KUJOGFX_PLATFORM_WINDOWS) && !defined(KUJOGFX_USE_GLES)
 	    HGLRC m_hrc;
 	    HDC m_hdc;
 
-	    bool createWGLContext(HDC pDC)
+	    string errorToString()
 	    {
+		DWORD error = GetLastError();
+
+		if (error == 0)
+		{
+		    return "";
+		}
+
+		LPVOID message_buffer;
+		FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR)&message_buffer, 0, NULL);
+
+		string message(static_cast<LPCTSTR>(message_buffer));
+		LocalFree(message_buffer);
+		return message;
+	    }
+	
+
+	    bool createWGLContext()
+	    {
+		m_hdc = GetDC(reinterpret_cast<HWND>(win_handle));
+
 		PIXELFORMATDESCRIPTOR pfd;
 		memset(&pfd, 0, sizeof(PIXELFORMATDESCRIPTOR));
 		pfd.nSize = sizeof(PIXELFORMATDESCRIPTOR);
@@ -1140,27 +1591,30 @@ namespace kujogfx
 		pfd.dwFlags = PFD_DOUBLEBUFFER | PFD_SUPPORT_OPENGL | PFD_DRAW_TO_WINDOW;
 		pfd.iPixelType = PFD_TYPE_RGBA;
 		pfd.cColorBits = 32;
-		pfd.cDepthBits = 32;
+		pfd.cAlphaBits = 8;
+		pfd.cDepthBits = 24;
 		pfd.iLayerType = PFD_MAIN_PLANE;
 
-		int nPixelFormat = ChoosePixelFormat(pDC, &pfd);
+		int nPixelFormat = ChoosePixelFormat(m_hdc, &pfd);
 
 		if (nPixelFormat == 0)
 		{
+		    cout << "Could not choose pixel format! Win32 error: " << errorToString() << endl;
 		    return false;
 		}
 
-		BOOL bResult = SetPixelFormat(pDC, nPixelFormat, &pfd);
+		BOOL bResult = SetPixelFormat(m_hdc, nPixelFormat, &pfd);
 
 		if (!bResult)
 		{
+		    cout << "Could not set pixel format!" << endl;
 		    return false;
 		}
 
-		HGLRC tempContext = wglCreateContext(pDC);
-		wglMakeCurrent(pDC, tempContext);
+		HGLRC tempContext = wglCreateContext(m_hdc);
+		wglMakeCurrent(m_hdc, tempContext);
 
-		int version = gladLoaderLoadWGL(pDC);
+		int version = gladLoaderLoadWGL(m_hdc);
 
 		if (version == 0)
 		{
@@ -1174,25 +1628,30 @@ namespace kujogfx
 		{
 		    WGL_CONTEXT_MAJOR_VERSION_ARB, gl_major_version,
 		    WGL_CONTEXT_MINOR_VERSION_ARB, gl_minor_version,
+		    #ifndef NDEBUG
+		    WGL_CONTEXT_FLAGS_ARB, WGL_CONTEXT_DEBUG_BIT_ARB,
+		    #else
 		    WGL_CONTEXT_FLAGS_ARB, 0,
+		    #endif
 		    0
 		};
 
-		m_hrc = wglCreateContextAttribsARB(pDC, 0, attribs);
+		m_hrc = wglCreateContextAttribsARB(m_hdc, 0, attribs);
 		wglMakeCurrent(NULL, NULL);
 		wglDeleteContext(tempContext);
-		wglMakeCurrent(pDC, m_hrc);
+		wglMakeCurrent(m_hdc, m_hrc);
 
-		if (gladLoaderLoadGL() == 0)
+		if (!m_hrc)
+		{
+		    cout << "Could not create WGL context!" << endl;
+		    return false;
+		}
+
+		if (!loadGL())
 		{
 		    wglMakeCurrent(NULL, NULL);
 		    wglDeleteContext(m_hrc);
 		    cout << "Could not load OpenGL functions!" << endl;
-		    return false;
-		}
-
-		if (!m_hrc)
-		{
 		    return false;
 		}
 
@@ -1202,7 +1661,7 @@ namespace kujogfx
 
 	    void deleteWGLContext()
 	    {
-		gladLoaderUnloadGL();
+		unloadGL();
 		wglMakeCurrent(NULL, NULL);
 
 		if (m_hrc)
@@ -1212,7 +1671,7 @@ namespace kujogfx
 		}
 	    }
 
-	    #elif defined(KUJOGFX_PLATFORM_LINUX)
+	    #else
 	    EGLDisplay m_display;
 	    EGLSurface m_surface;
 	    EGLContext m_context;
@@ -1226,6 +1685,10 @@ namespace kujogfx
 		    cout << "Could not load EGL!" << endl;
 		    return false;
 		}
+
+		#if defined(KUJOGFX_PLATFORM_WINDOWS)
+		disp_handle = GetDC(reinterpret_cast<HWND>(win_handle));
+		#endif
 
 		auto display_type = reinterpret_cast<EGLNativeDisplayType>(disp_handle);
 		auto window_type = reinterpret_cast<EGLNativeWindowType>(win_handle);
@@ -1252,8 +1715,16 @@ namespace kujogfx
 		    return false;
 		}
 
+		#if defined(KUJOGFX_USE_GLES)
+		EGLenum bind_api =  EGL_OPENGL_ES_API;
+		EGLint attrib_bit = EGL_OPENGL_ES2_BIT;
+		#else
+		EGLenum bind_api = EGL_OPENGL_API;
+		EGLint attrib_bit = EGL_OPENGL_BIT;
+		#endif
 
-		if (!eglBindAPI(EGL_OPENGL_API))
+
+		if (!eglBindAPI(bind_api))
 		{
 		    cout << "Could not bind OpenGL API!" << endl;
 		    return false;
@@ -1262,8 +1733,8 @@ namespace kujogfx
 		EGLint config_attrib[] = 
 		{
 		    EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-		    EGL_CONFORMANT, EGL_OPENGL_BIT,
-		    EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+		    EGL_CONFORMANT, attrib_bit,
+		    EGL_RENDERABLE_TYPE, attrib_bit,
 		    EGL_COLOR_BUFFER_TYPE, EGL_RGB_BUFFER,
 		    EGL_RED_SIZE, 8,
 		    EGL_GREEN_SIZE, 8,
@@ -1307,7 +1778,9 @@ namespace kujogfx
 		{
 		    EGL_CONTEXT_MAJOR_VERSION_KHR, gl_major_version,
 		    EGL_CONTEXT_MINOR_VERSION_KHR, gl_minor_version,
+		    #if !defined(KUJOGFX_USE_GLES)
 		    EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+		    #endif
 		    #ifndef NDEBUG
 		    EGL_CONTEXT_OPENGL_DEBUG, EGL_TRUE,
 		    #endif
@@ -1328,25 +1801,11 @@ namespace kujogfx
 		    return false;
 		}
 
-		if (gladLoaderLoadGL() == 0)
+		if (!loadGL())
 		{
 		    cout << "Could not load OpenGL functions!" << endl;
 		    return false;
 		}
-
-		#ifndef NDEBUG
-		auto debug_cb = [](GLenum source, GLenum type, GLuint, GLenum severity, GLsizei, const GLchar *msg, const void*) -> void
-		{
-		    cout << "Source: " << hex << int(source) << endl;
-		    cout << "Type: " << hex << int(type) << endl;
-		    cout << "Severity: " << hex << int(severity) << endl;
-		    cout << "Message: " << string(msg) << endl;
-		    cout << endl;
-		};
-
-		glDebugMessageCallbackARB(debug_cb, NULL);
-		glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS_ARB);
-		#endif
 
 		cout << "OpenGL version found: " << glGetString(GL_VERSION) << endl;
 		return true;
@@ -1354,7 +1813,7 @@ namespace kujogfx
 
 	    void deleteEGLContext()
 	    {
-		gladLoaderUnloadGL();
+		unloadGL();
 		eglMakeCurrent(m_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 		eglDestroyContext(m_display, m_context);
 		eglDestroySurface(m_display, m_surface);
@@ -1411,23 +1870,34 @@ namespace kujogfx
 		    return false;
 		}
 
-		#if defined(KUJOGFX_PLATFORM_WINDOWS)
-		HWND handle = reinterpret_cast<HWND>(win_handle);
-		m_hdc = GetDC(handle);
-		if (!createWGLContext(m_hdc))
+		if (!createGLContext())
 		{
-		    return false;
-		}
-		#elif defined(KUJOGFX_PLATFORM_LINUX)
-
-		if (!createEGLContext())
-		{
+		    cout << "Could not create OpenGL context!" << endl;
 		    return false;
 		}
 
-		#else
-		#error "OpenGL context creation is unimplemented for this platform"
+		// TODO: Figure out alternative for MacOS, which doesn't support any debug extensions
+		/*
+		#if !defined(NDEBUG)
+		auto debug_cb = [](GLenum source, GLenum type, GLuint, GLenum severity, GLsizei, const GLchar *msg, const void*) -> void
+		{
+		    cout << "Source: " << hex << int(source) << endl;
+		    cout << "Type: " << hex << int(type) << endl;
+		    cout << "Severity: " << hex << int(severity) << endl;
+		    cout << "Message: " << string(msg) << endl;
+		    cout << endl;
+		};
+
+		glDebugMessageCallbackARB(debug_cb, NULL);
+		glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS_ARB);
 		#endif
+		*/
+
+		if (!initLimits())
+		{
+		    cout << "Could not initialize OpenGL limits!" << endl;
+		    return false;
+		}
 
 		glGenVertexArrays(1, &gl_vao);
 		glBindVertexArray(gl_vao);
@@ -1435,8 +1905,85 @@ namespace kujogfx
 		return true;
 	    }
 
+	    string glErrorToString(GLenum code)
+	    {
+		stringstream err_str;
+
+		switch (code)
+		{
+		    case GL_INVALID_ENUM: err_str << "Invalid enum"; break;
+		    case GL_INVALID_VALUE: err_str << "Invalid value"; break;
+		    case GL_INVALID_OPERATION: err_str << "Invalid operation"; break;
+		    case GL_OUT_OF_MEMORY: err_str << "Out of memory"; break;
+		    case GL_INVALID_FRAMEBUFFER_OPERATION: err_str << "Invalid framebuffer operation" << endl;
+		    default:
+		    {
+			err_str << "Error code of " << hex << int(code);
+		    }
+		    break; 
+		}
+
+		return err_str.str();
+	    }
+
+	    bool checkErrors(string msg)
+	    {
+		GLenum error_code = glGetError();
+
+		if (error_code != GL_NO_ERROR)
+		{
+		    cout << msg << " OpenGL error: " << glErrorToString(error_code) << endl;
+		    return false;
+		}
+
+		return true;
+	    }
+
+	    bool initLimits()
+	    {
+		if (!checkErrors("Could not initialize OpenGL!"))
+		{
+		    return false;
+		}
+
+		GLint gl_int_val;
+		glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &gl_int_val);
+
+		if (!checkErrors("Could not fetch max vertex attributes!"))
+		{
+		    return false;
+		}
+
+		gl_max_vertex_attribs = (uint32_t)gl_int_val;
+
+		if (gl_max_vertex_attribs > max_vertex_attribs)
+		{
+		    gl_max_vertex_attribs = max_vertex_attribs;
+		}
+
+		cout << "Maximum vertex attributes: " << dec << int(gl_max_vertex_attribs) << endl;
+
+		return true;
+	    }
+
 	    void shutdownOpenGL()
 	    {
+		for (size_t i = 0; i < max_vertex_buffer_bind_slots; i++)
+		{
+		    auto buffer_data = vertex_buffer_data[i];
+		    auto buffer_target = vertex_buffer_targets[i];
+
+		    if (buffer_data)
+		    {
+			if (buffer_target)
+			{
+			    glBindBuffer(buffer_target, 0);
+			}
+
+			glDeleteBuffers(1, &buffer_data);
+		    }
+		}
+
 		for (auto &iter : pipelines)
 		{
 		    auto pipeline = iter.second;
@@ -1453,13 +2000,7 @@ namespace kujogfx
 		    glDeleteVertexArrays(1, &gl_vao);
 		}
 
-		#if defined(KUJOGFX_PLATFORM_WINDOWS)
-		deleteWGLContext();
-		#elif defined(KUJOGFX_PLATFORM_LINUX)
-		deleteEGLContext();
-		#else
-		#error "OpenGL context deletion is unimplemented for this platform"
-		#endif
+		deleteGLContext();
 	    }
 
 	    bool isProgramDelete(GLuint program)
@@ -1504,9 +2045,41 @@ namespace kujogfx
 		return;
 	    }
 
+	    uint8_t getSize(KujoGFXVertexFormat format)
+	    {
+		switch (format)
+		{
+		    case VertexFormatFloat3: return 3; break;
+		    case VertexFormatFloat4: return 4; break;
+		    case VertexFormatInvalid: return 0; break;
+		    default:
+		    {
+			cout << "Unrecoginzed size fetch vertex format of " << dec << int(format) << endl;
+			throw runtime_error("KujoGFX_GL error");
+		    }
+		    break;
+		}
+	    }
+
+	    GLenum getType(KujoGFXVertexFormat format)
+	    {
+		switch (format)
+		{
+		    case VertexFormatFloat3:
+		    case VertexFormatFloat4: return GL_FLOAT; break;
+		    case VertexFormatInvalid: return 0; break;
+		    default:
+		    {
+			cout << "Unrecoginzed type fetch vertex format of " << dec << int(format) << endl;
+			throw runtime_error("KujoGFX_GL error");
+		    }
+		    break;
+		}
+	    }
+
 	    void setPipeline(KujoGFXPipeline pipeline)
 	    {
-		auto cached_pipeline = pipelines.find(pipeline.id);
+		auto cached_pipeline = pipelines.find(pipeline.getID());
 
 		if (cached_pipeline == pipelines.end())
 		{
@@ -1517,7 +2090,7 @@ namespace kujogfx
 		current_pipeline = cached_pipeline->second;
 	    }
 
-	    void createPipeline(KujoGFXPipeline pipeline)
+	    void createPipeline(KujoGFXPipeline &pipeline)
 	    {
 		GLPipeline new_pipeline;
 		auto shader = pipeline.shader;
@@ -1530,6 +2103,7 @@ namespace kujogfx
 
 		string vert_source = shader.vertex_out_src;
 		string frag_source = shader.fragment_out_src;
+		auto names = shader.glsl_names;
 		string vert_log = "";
 		string frag_log = "";
 
@@ -1584,14 +2158,97 @@ namespace kujogfx
 		glDeleteShader(vertex_shader);
 		glDeleteShader(fragment_shader);
 
+		for (size_t attr = 0; attr < max_vertex_attribs; attr++)
+		{
+		    new_pipeline.attribs[attr].vb_index = -1;
+		}
+
+		for (size_t attr = 0; attr < gl_max_vertex_attribs; attr++)
+		{
+		    auto attrib = pipeline.layout.attribs[attr];
+
+		    if (attrib.format == VertexFormatInvalid)
+		    {
+			break;
+		    }
+
+		    auto buffer = pipeline.layout.buffers[attrib.buffer_index];
+
+		    GLint attr_loc = attr;
+
+		    if (!names[attr].empty())
+		    {
+			attr_loc = glGetAttribLocation(shader_program, names[attr].c_str());
+		    }
+
+		    if (attr_loc != -1)
+		    {
+			assert(attr_loc < (GLint)gl_max_vertex_attribs);
+			auto &gl_attr = new_pipeline.attribs[attr_loc];
+			assert(gl_attr.vb_index == -1);
+			gl_attr.vb_index = int8_t(attrib.buffer_index);
+			assert(gl_attr.stride > 0);
+			gl_attr.stride = uint8_t(buffer.stride);
+			gl_attr.offset = attrib.offset;
+			gl_attr.size = getSize(attrib.format);
+			gl_attr.type = getType(attrib.format);
+		    }
+		}
+
 		new_pipeline.program = shader_program;
-		pipelines.insert(make_pair(pipeline.id, new_pipeline));
+		pipelines.insert(make_pair(pipeline.getID(), new_pipeline));
 		current_pipeline = new_pipeline;
 	    }
 
 	    void applyPipeline()
 	    {
+		glViewport(0, 0, window_width, -window_height);
+		glScissor(0, 0, window_width, window_height);
 		glUseProgram(current_pipeline.program);
+	    }
+
+	    GLenum getTarget(KujoGFXBuffer)
+	    {
+		return GL_ARRAY_BUFFER;
+	    }
+
+	    GLenum getUsage(KujoGFXBuffer)
+	    {
+		return GL_STATIC_DRAW;
+	    }
+
+	    void createBuffer(KujoGFXBuffer buffer, size_t index)
+	    {
+		auto target = getTarget(buffer);
+		auto usage = getUsage(buffer);
+
+		glGenBuffers(1, &vertex_buffer_data[index]);
+		glBindBuffer(target, vertex_buffer_data[index]);
+		glBufferData(target, buffer.getSize(), NULL, usage);
+
+		auto data = buffer.getData();
+
+		if (data != NULL)
+		{
+		    glBufferSubData(target, 0, buffer.getSize(), data);
+		}
+	    }
+
+	    void applyBindings(KujoGFXBindings)
+	    {
+		for (size_t attr = 0; attr < gl_max_vertex_attribs; attr++)
+		{
+		    auto &attrib = current_pipeline.attribs[attr];
+		    if (attrib.vb_index >= 0)
+		    {
+			glVertexAttribPointer(attr, attrib.size, attrib.type, GL_FALSE, attrib.stride, reinterpret_cast<void*>(attrib.offset));
+			glEnableVertexAttribArray(attr);
+		    }
+		    else
+		    {
+			glDisableVertexAttribArray(attr);
+		    }
+		}
 	    }
 
 	    bool compileShader(GLuint &shader, GLenum shader_type, string source, string &log_str)
@@ -1625,30 +2282,6 @@ namespace kujogfx
 
 	    void draw(KujoGFXDraw draw_cmd)
 	    {
-		auto program = current_pipeline.program;
-		glValidateProgram(program);
-
-		int success = 0;
-
-		glGetProgramiv(program, GL_VALIDATE_STATUS, &success);
-
-		if (!success)
-		{
-		    GLint log_length;
-		    glGetProgramiv(program, GL_INFO_LOG_LENGTH, &log_length);
-
-		    vector<char> str_data(log_length, 0);
-		    glGetProgramInfoLog(program, log_length, NULL, str_data.data());
-
-		    string log_str(log_length, 0);
-		    copy(str_data.begin(), str_data.end(), log_str.begin());
-
-		    cout << "Program validation failed!" << endl;
-		    cout << "Error log: " << endl;
-		    cout << log_str << endl;
-		    throw runtime_error("KujoGFX_OpenGL error");
-		}
-
 		int base_elements = draw_cmd.base_element;
 		int num_elements = draw_cmd.num_elements;
 		int num_instances = draw_cmd.num_instances;
@@ -1665,9 +2298,9 @@ namespace kujogfx
 
 	    void commitFrame()
 	    {
-		#if defined(KUJOGFX_PLATFORM_WINDOWS)
+		#if defined(KUJOGFX_PLATFORM_WINDOWS) && !defined(KUJOGFX_USE_GLES)
 		SwapBuffers(m_hdc);
-		#elif defined(KUJOGFX_PLATFORM_LINUX)
+		#elif !defined(KUJOGFX_PLATFORM_EMSCRIPTEN)
 		eglSwapBuffers(m_display, m_surface);
 		#else
 		#error "OpenGL buffer swap is unimplemented for this platform"
@@ -1701,10 +2334,20 @@ namespace kujogfx
 	    VkPipeline pipeline = VK_NULL_HANDLE;
 	};
 
+	struct VulkanBuffer
+	{
+	    bool is_active = false;
+	    VkBuffer buffer;
+	    VkDeviceMemory memory;
+	};
+
 	public:
 	    KujoGFX_Vulkan()
 	    {
-
+		for (auto &buffer : vertex_buffers)
+		{
+		    buffer.is_active = false;
+		}
 	    }
 
 	    ~KujoGFX_Vulkan()
@@ -1759,6 +2402,8 @@ namespace kujogfx
 	    VulkanPipeline current_pipeline;
 
 	    static constexpr int max_frames_in_flight = 2;
+
+	    array<VulkanBuffer, max_vertex_buffer_bind_slots> vertex_buffers;
 
 	    VkSemaphore image_available_semaphore;
 	    VkSemaphore render_finished_semaphore;
@@ -1867,6 +2512,16 @@ namespace kujogfx
 		    }
 		}
 
+		for (auto &buffer : vertex_buffers)
+		{
+		    if (buffer.is_active)
+		    {
+			vkDestroyBuffer(device, buffer.buffer, NULL);
+			vkFreeMemory(device, buffer.memory, NULL);
+			buffer.is_active = false;
+		    }
+		}
+
 		vkDestroyPipelineLayout(device, pipeline_layout, NULL);
 		vkDestroySemaphore(device, image_available_semaphore, NULL);
 		vkDestroySemaphore(device, render_finished_semaphore, NULL);
@@ -1874,7 +2529,46 @@ namespace kujogfx
 		vkFreeCommandBuffers(device, command_pool, present_command_buffers.size(), present_command_buffers.data());
 		vkDestroyCommandPool(device, command_pool, NULL);
 
+		/*
+		for (auto &buffer : vertex_buffers)
+		{
+		    if (buffer != VK_NULL_HANDLE)
+		    {
+			vkDestroyBuffer(device, buffer, NULL);
+		    }
+		}
+
+		for (auto &mem : vertex_memory_buffers)
+		{
+		    if (mem != VK_NULL_HANDLE)
+		    {
+			vkFreeMemory(device, mem, NULL);
+		    }
+		}
+		*/
+
 		cleanupSwapchain();
+
+		/*
+		size_t index = 0;
+
+		for (auto &buffer : vertex_buffers)
+		{
+		    cout << "Buffer " << dec << int(1 + index) << ": " << endl;
+		    cout << "Is active: " << dec << int(buffer.is_active) << endl;
+		    cout << "Buffer: " << hex << (reinterpret_cast<uint64_t>(buffer.buffer)) << endl;
+		    cout << endl;
+
+		    if (buffer.is_active)
+		    {
+			vkDestroyBuffer(device, buffer.buffer, NULL);
+			buffer.is_active = false;
+		    }
+
+		    index += 1;
+		}
+		*/
+
 		vkDestroyDevice(device, NULL);
 		vkDestroySurfaceKHR(instance, surface, NULL);
 		vkDestroyInstance(instance, NULL);
@@ -2135,7 +2829,7 @@ namespace kujogfx
 
 	    void setPipeline(KujoGFXPipeline pipeline)
 	    {
-		auto cached_pipeline = pipelines.find(pipeline.id);
+		auto cached_pipeline = pipelines.find(pipeline.getID());
 
 		if (cached_pipeline == pipelines.end())
 		{
@@ -2146,7 +2840,23 @@ namespace kujogfx
 		current_pipeline = cached_pipeline->second;
 	    }
 
-	    void createPipeline(KujoGFXPipeline pipeline)
+	    VkFormat getFormat(KujoGFXVertexFormat format)
+	    {
+		switch (format)
+		{
+		    case VertexFormatFloat3: return VK_FORMAT_R32G32B32_SFLOAT; break;
+		    case VertexFormatFloat4: return VK_FORMAT_R32G32B32A32_SFLOAT; break;
+		    case VertexFormatInvalid: return VK_FORMAT_UNDEFINED; break;
+		    default:
+		    {
+			cout << "Unrecoginzed vertex format of " << dec << int(format) << endl;
+			throw runtime_error("KujoGFX_GL error");
+		    }
+		    break;
+		}
+	    }
+
+	    void createPipeline(KujoGFXPipeline &pipeline)
 	    {
 		VulkanPipeline new_pipeline;
 		auto shader = pipeline.shader;
@@ -2156,6 +2866,8 @@ namespace kujogfx
 		    cout << "Could not compile shader!" << endl;
 		    throw runtime_error("KujoGFX_Vulkan error");
 		}
+
+		auto locations = shader.spirv_locations;
 
 		new_pipeline.vert_module = createShaderModule(shader.vert_spirv);
 		new_pipeline.frag_module = createShaderModule(shader.frag_spirv);
@@ -2178,6 +2890,39 @@ namespace kujogfx
 		    frag_shader_info
 		};
 
+		vector<VkVertexInputBindingDescription> binding_descriptions;
+		vector<VkVertexInputAttributeDescription> attrib_descriptions;
+
+		for (size_t i = 0; i < max_vertex_buffer_bind_slots; i++)
+		{
+		    if (pipeline.layout.vertex_buffer_layout_active[i])
+		    {
+			VkVertexInputBindingDescription description;
+			description.binding = i;
+			description.stride = pipeline.layout.buffers[i].stride;
+			description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+			binding_descriptions.push_back(description);
+		    }
+		}
+
+		for (size_t attr_index = 0; attr_index < max_vertex_attribs; attr_index++)
+		{
+		    auto attrib = pipeline.layout.attribs[attr_index];
+
+		    if (attrib.format == VertexFormatInvalid)
+		    {
+			break;
+		    }
+
+		    VkVertexInputAttributeDescription description;
+		    description.binding = attrib.buffer_index;
+		    description.location = locations.at(attr_index);
+		    description.format = getFormat(attrib.format);
+		    description.offset = attrib.offset;
+
+		    attrib_descriptions.push_back(description);
+		}
+
 		vector<VkDynamicState> dynamic_states = 
 		{
 		    VK_DYNAMIC_STATE_VIEWPORT,
@@ -2191,10 +2936,10 @@ namespace kujogfx
 
 		VkPipelineVertexInputStateCreateInfo vertex_input_info = {};
 		vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-		vertex_input_info.vertexBindingDescriptionCount = 0;
-		vertex_input_info.pVertexBindingDescriptions = NULL;
-		vertex_input_info.vertexAttributeDescriptionCount = 0;
-		vertex_input_info.pVertexAttributeDescriptions = NULL;
+		vertex_input_info.vertexBindingDescriptionCount = uint32_t(binding_descriptions.size());
+		vertex_input_info.pVertexBindingDescriptions = binding_descriptions.data();
+		vertex_input_info.vertexAttributeDescriptionCount = uint32_t(attrib_descriptions.size());
+		vertex_input_info.pVertexAttributeDescriptions = attrib_descriptions.data();
 
 		VkPipelineInputAssemblyStateCreateInfo input_assembly = {};
 		input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -2254,7 +2999,7 @@ namespace kujogfx
 		    throw runtime_error("KujoGFX_Vulkan error");
 		}
 
-		pipelines.insert(make_pair(pipeline.id, new_pipeline));
+		pipelines.insert(make_pair(pipeline.getID(), new_pipeline));
 		current_pipeline = new_pipeline;
 	    }
 
@@ -2275,6 +3020,94 @@ namespace kujogfx
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, current_pipeline.pipeline);
 		vkCmdSetViewport(command_buffer, 0, 1, &viewport);
 		vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+	    }
+
+	    VkBufferUsageFlags getUsage(KujoGFXBuffer)
+	    {
+		return VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+	    }
+
+	    uint32_t findMemoryType(uint32_t type_filter, VkMemoryPropertyFlags properties)
+	    {
+		VkPhysicalDeviceMemoryProperties mem_properties;
+		vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_properties);
+
+		for (uint32_t i = 0; i < mem_properties.memoryTypeCount; i++)
+		{
+		    if ((type_filter & (1 << i)) && ((mem_properties.memoryTypes[i].propertyFlags & properties) == properties))
+		    {
+			return i;
+		    }
+		}
+
+		cout << "Could not find appropriate memory type!" << endl;
+		throw runtime_error("KujoGFX_Vulkan error");
+	    }
+
+	    void createBuffer(KujoGFXBuffer buffer, size_t index)
+	    {
+		auto &vertex_buffer = vertex_buffers[index];
+
+		if (vertex_buffer.is_active)
+		{
+		    return;
+		}
+
+		VkBufferCreateInfo buffer_info = {};
+		buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		buffer_info.size = uint64_t(buffer.getSize());
+		buffer_info.usage = getUsage(buffer);
+		buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+		VkResult err = vkCreateBuffer(device, &buffer_info, NULL, &vertex_buffer.buffer);
+
+		if (err != VK_SUCCESS)
+		{
+		    cout << "Could not create buffer!" << endl;
+		    throw runtime_error("KujoGFX_Vulkan error");
+		}
+
+		VkMemoryRequirements mem_requirements;
+		vkGetBufferMemoryRequirements(device, vertex_buffer.buffer, &mem_requirements);
+
+		VkMemoryAllocateInfo alloc_info = {};
+		alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		alloc_info.allocationSize = mem_requirements.size;
+		alloc_info.memoryTypeIndex = findMemoryType(mem_requirements.memoryTypeBits, (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+
+		err = vkAllocateMemory(device, &alloc_info, NULL, &vertex_buffer.memory);
+
+		if (err != VK_SUCCESS)
+		{
+		    cout << "Could not allocate buffer memory!" << endl;
+		    throw runtime_error("KujoGFX_Vulkan error");
+		}
+
+		vkBindBufferMemory(device, vertex_buffer.buffer, vertex_buffer.memory, 0);
+
+		void *data = NULL;
+		vkMapMemory(device, vertex_buffer.memory, 0, buffer_info.size, 0, &data);
+		memcpy(data, buffer.getData(), size_t(buffer_info.size));
+		vkUnmapMemory(device, vertex_buffer.memory);
+
+		vertex_buffer.is_active = true;
+	    }
+
+	    void applyBindings(KujoGFXBindings)
+	    {
+		vector<VkBuffer> buffers;
+		vector<VkDeviceSize> offsets;
+
+		for (auto &buffer : vertex_buffers)
+		{
+		    if (buffer.is_active)
+		    {
+			buffers.push_back(buffer.buffer);
+			offsets.push_back(0);
+		    }
+		}
+
+		vkCmdBindVertexBuffers(command_buffer, 0, buffers.size(), buffers.data(), offsets.data());
 	    }
 
 	    void draw(KujoGFXDraw draw)
@@ -3169,6 +4002,12 @@ namespace kujogfx
 		commands.push_back(command);
 	    }
 
+	    void applyBindings(KujoGFXBindings bindings)
+	    {
+		KujoGFXCommand command(bindings);
+		commands.push_back(command);
+	    }
+
 	    void draw(int base_element, int num_elements, int num_instances)
 	    {
 		KujoGFXCommand command(KujoGFXDraw(base_element, num_elements, num_instances));
@@ -3426,6 +4265,7 @@ namespace kujogfx
 		    case CommandEndPass: backend->endPass(); break;
 		    case CommandCommit: backend->commitFrame(); break;
 		    case CommandApplyPipeline: applyPipelineCmd(cmd.current_pipeline); break;
+		    case CommandApplyBindings: applyBindingsCmd(cmd.current_bindings); break;
 		    case CommandDraw: backend->draw(cmd.current_draw_call); break;
 		    default:
 		    {
@@ -3436,9 +4276,79 @@ namespace kujogfx
 		}
 	    }
 
+	    size_t vertexFormatByteSize(KujoGFXVertexFormat format)
+	    {
+		switch (format)
+		{
+		    case VertexFormatFloat3: return 12; break;
+		    case VertexFormatFloat4: return 16; break;
+		    case VertexFormatInvalid: return 0; break;
+		    default: return 0; break;
+		}
+	    }
+
+	    KujoGFXPipeline createPipeline(KujoGFXPipeline pipeline)
+	    {
+		KujoGFXPipeline init_pipeline = pipeline;
+
+		for (size_t i = 0; i < max_vertex_buffer_bind_slots; i++)
+		{
+		    auto attrib = init_pipeline.layout.attribs[i];
+		    size_t buffer_index = attrib.buffer_index;
+
+		    if (attrib.format != VertexFormatInvalid)
+		    {
+			init_pipeline.layout.vertex_buffer_layout_active[buffer_index] = true;
+		    }
+		}
+
+		array<int, max_vertex_buffer_bind_slots> auto_offs = {{0}};
+
+		bool use_auto_offs = true;
+
+		for (auto &attrib : pipeline.layout.attribs)
+		{
+		    if (attrib.offset != 0)
+		    {
+			use_auto_offs = false;
+		    }
+		}
+
+		for (size_t i = 0; i < max_vertex_attribs; i++)
+		{
+		    auto &attrib = init_pipeline.layout.attribs[i];
+
+		    if (attrib.format == VertexFormatInvalid)
+		    {
+			break;
+		    }
+
+		    size_t buffer_index = 0;
+
+		    if (use_auto_offs)
+		    {
+			attrib.offset = auto_offs[buffer_index];
+		    }
+
+		    auto_offs[buffer_index] += vertexFormatByteSize(attrib.format);
+		}
+
+		for (size_t buf_index = 0; buf_index < max_vertex_buffer_bind_slots; buf_index++)
+		{
+		    auto &buffer = init_pipeline.layout.buffers[buf_index];
+
+		    if (buffer.stride == 0)
+		    {
+			buffer.stride = auto_offs[buf_index];
+		    }
+		}
+
+		return init_pipeline;
+	    }
+
 	    void applyPipelineCmd(KujoGFXPipeline pipeline)
 	    {
-		auto cached_pipeline = pipeline_cache.find(pipeline.id);
+		auto cached_pipeline = pipeline_cache.find(pipeline.getID());
 
 		if (cached_pipeline != pipeline_cache.end())
 		{
@@ -3446,11 +4356,30 @@ namespace kujogfx
 		}
 		else
 		{
-		    backend->createPipeline(pipeline);
-		    pipeline_cache.insert(make_pair(pipeline.id, pipeline));
+		    auto init_pipeline = createPipeline(pipeline);
+		    backend->createPipeline(init_pipeline);
+		    pipeline_cache.insert(make_pair(pipeline.getID(), init_pipeline));
 		}
 
 		backend->applyPipeline();
+	    }
+
+	    void applyBindingsCmd(KujoGFXBindings bindings)
+	    {
+		for (size_t i = 0; i < bindings.vertex_buffers.size(); i++)
+		{
+		    auto &buffer = bindings.vertex_buffers.at(i);
+
+		    if ((buffer.getData() == NULL) || buffer.isCreated())
+		    {
+			continue;
+		    }
+
+		    backend->createBuffer(buffer, i);
+		    buffer.setCreated();
+		}
+
+		backend->applyBindings(bindings);
 	    }
     };
 };
