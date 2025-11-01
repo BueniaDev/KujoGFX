@@ -3,12 +3,14 @@
 #include <kujogfx_helper.h>
 using namespace std;
 
+#include "example_03_shader.inl"
+
 KujoGFX gfx;
 KujoGFXHelper helper;
 
 bool init()
 {
-    return helper.init("KujoGFX-clear", 800, 600);
+    return helper.init("KujoGFX-triangle-color", 800, 600);
 }
 
 void shutdown()
@@ -48,10 +50,33 @@ int main()
 	return 1;
     }
 
-    KujoGFXPassAction pass_action(KujoGFXColor(0.0, 0.0, 1.0, 1.0));
+    const float vertices[] =
+    {
+	// Positions		// Colors
+	0.0f, 0.5f, 0.5f,	1.0f, 0.0f, 0.0f, 1.0f,
+	0.5f, -0.5f, 0.5f,	0.0f, 1.0f, 0.0f, 1.0f,
+	-0.5f, -0.5f, 0.5f,	0.0f, 0.0f, 1.0f, 1.0f
+    };
+
+    KujoGFXBuffer buffer;
+    buffer.setData(vertices);
+
+    KujoGFXShader shader(example_03_vertex, example_03_fragment, example_03_locations);
+    KujoGFXPipeline pipeline;
+    pipeline.shader = shader;
+    pipeline.layout.attribs[0].format = VertexFormatFloat3;
+    pipeline.layout.attribs[1].format = VertexFormatFloat4;
+
+    KujoGFXBindings bindings;
+    bindings.vertex_buffers[0] = buffer;
+
+    KujoGFXPassAction pass_action(KujoGFXColor(0.0, 0.0, 0.0, 1.0));
 
     helper.run([&]() -> void {
 	gfx.beginPass(pass_action);
+	gfx.applyPipeline(pipeline);
+	gfx.applyBindings(bindings);
+	gfx.draw(0, 3, 1);
 	gfx.endPass();
 	gfx.commit();
 	gfx.frame();

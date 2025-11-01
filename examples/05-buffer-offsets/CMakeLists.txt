@@ -1,7 +1,7 @@
-project(02-triangle)
+project(05-buffer-offsets)
 
 set(EX_SOURCES
-	02_triangle.cpp)
+	05_buffer_offsets.cpp)
 
 add_executable(${PROJECT_NAME} ${EX_SOURCES})
 target_include_directories(${PROJECT_NAME} PUBLIC ${CMAKE_SOURCE_DIR}/examples/utils)

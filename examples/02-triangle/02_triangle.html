@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+    <head>
+	<meta charset="utf-8">
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+	<title>KujoGFX Example 2 - Emscripten</title>
+    </head>
+    <body>
+	<script type='text/javascript'>
+	    var Module = {
+		preRun: [],
+		print: (...args) => console.log('[stdout]: ' + args.join(' ')),
+		printErr: (...args) => console.log('[stderr]: ' + args.join(' ')),
+	    };
+
+	    window.onerror = (event) => console.log('[onerror]: ' + event.message);
+	</script>
+	<script async type="text/javascript" src="02-triangle.js"></script>
+    </body>
+</html>

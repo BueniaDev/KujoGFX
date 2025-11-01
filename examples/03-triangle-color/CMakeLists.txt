@@ -1,7 +1,7 @@
-project(02-triangle)
+project(03-triangle-color)
 
 set(EX_SOURCES
-	02_triangle.cpp)
+	03_triangle_color.cpp)
 
 add_executable(${PROJECT_NAME} ${EX_SOURCES})
 target_include_directories(${PROJECT_NAME} PUBLIC ${CMAKE_SOURCE_DIR}/examples/utils)

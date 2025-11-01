@@ -3,14 +3,14 @@
 #include <kujogfx_helper.h>
 using namespace std;
 
-#include "example_02_shader.inl"
+#include "example_04_shader.inl"
 
 KujoGFX gfx;
 KujoGFXHelper helper;
 
 bool init()
 {
-    return helper.init("KujoGFX-triangle", 800, 600);
+    return helper.init("KujoGFX-quad", 800, 600);
 }
 
 void shutdown()
@@ -52,22 +52,40 @@ int main()
 
     const float vertices[] =
     {
-	// positions
-	0.0f, 0.5f, 0.5f,
-	0.5f, -0.5f, 0.5f,
-	-0.5f, -0.5f, 0.5f
+	// Positions		// Colors
+	-0.5f,  0.5f, 0.5f,	1.0f, 0.0f, 0.0f, 1.0f,
+	 0.5f,  0.5f, 0.5f,	0.0f, 1.0f, 0.0f, 1.0f,
+	 0.5f, -0.5f, 0.5f,	0.0f, 0.0f, 1.0f, 1.0f,
+	-0.5f, -0.5f, 0.5f,     1.0f, 1.0f, 1.0f, 1.0f
     };
 
-    KujoGFXBuffer buffer;
-    buffer.setData(vertices);
+    const uint16_t indices[] =
+    {
+	// First triangle
+	0, 1, 2,
+	// Second triangle
+	0, 2, 3
+    };
 
-    KujoGFXShader shader(example_02_vertex, example_02_fragment, example_02_locations);
+    KujoGFXBuffer vert_buffer;
+    vert_buffer.setData(vertices);
+
+    KujoGFXBuffer index_buffer;
+    index_buffer.setIndexBuffer();
+    index_buffer.setData(indices);
+
+    KujoGFXShader shader(example_04_vertex, example_04_fragment, example_04_locations);
     KujoGFXPipeline pipeline;
     pipeline.shader = shader;
+    pipeline.index_type = IndexTypeUint16;
+    pipeline.layout.attribs[0].offset = 0;
     pipeline.layout.attribs[0].format = VertexFormatFloat3;
+    pipeline.layout.attribs[1].offset = 12;
+    pipeline.layout.attribs[1].format = VertexFormatFloat4;
 
     KujoGFXBindings bindings;
-    bindings.vertex_buffers[0] = buffer;
+    bindings.vertex_buffers[0] = vert_buffer;
+    bindings.index_buffer = index_buffer;
 
     KujoGFXPassAction pass_action(KujoGFXColor(0.0, 0.0, 0.0, 1.0));
 
@@ -75,7 +93,7 @@ int main()
 	gfx.beginPass(pass_action);
 	gfx.applyPipeline(pipeline);
 	gfx.applyBindings(bindings);
-	gfx.draw(0, 3, 1);
+	gfx.draw(0, 6, 1);
 	gfx.endPass();
 	gfx.commit();
 	gfx.frame();
