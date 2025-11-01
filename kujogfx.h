@@ -4478,7 +4478,7 @@ namespace kujogfx
 		view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
 		view_info.format = format;
 		view_info.subresourceRange.aspectMask = aspect_flags;
-		view_info.subresourceRange.baseMipLevel = 1;
+		view_info.subresourceRange.baseMipLevel = 0;
 		view_info.subresourceRange.levelCount = 1;
 		view_info.subresourceRange.baseArrayLayer = 0;
 		view_info.subresourceRange.layerCount = 1;
@@ -4535,10 +4535,10 @@ namespace kujogfx
 		depth_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
 		depth_attachment.loadOp = convertLoadOp(current_pass.action.depth_attach.load_op);
 		depth_attachment.storeOp = convertStoreOp(current_pass.action.depth_attach.store_op);
-		color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-		color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		color_attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		depth_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		depth_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		depth_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		depth_attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
 		VkAttachmentReference color_attachment_ref = {};
 		color_attachment_ref.attachment = 0;
